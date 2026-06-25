@@ -18,6 +18,7 @@ class Settings:
     min_market_cap: float = 1_000_000_000
     min_dte: int = 20
     max_dte: int = 50
+    expiry_type: str = "any"   # "any" | "weekly" | "monthly"
     min_otm: float = 0.02
     max_otm: float = 0.15
     min_open_interest: int = 50

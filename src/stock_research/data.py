@@ -25,6 +25,7 @@ class TickerSnapshot:
     quote_type: str          # "ETF", "EQUITY", ...
     size_usd: float          # market cap for equities, total assets (AUM) for ETFs
     dividend_yield: float    # annual, as a fraction (0.015 = 1.5%); 0 if unknown
+    info: dict               # raw yfinance .info, reused for fundamentals (no refetch)
 
 
 def get_snapshot(ticker: str) -> TickerSnapshot | None:
@@ -70,6 +71,7 @@ def get_snapshot(ticker: str) -> TickerSnapshot | None:
         quote_type=quote_type or "EQUITY",
         size_usd=float(size),
         dividend_yield=div,
+        info=info,
     )
 
 
@@ -131,3 +133,16 @@ def days_to_expiry(expiry: str, today: dt.date | None = None) -> int:
     today = today or dt.date.today()
     exp = dt.datetime.strptime(expiry, "%Y-%m-%d").date()
     return (exp - today).days
+
+
+def _third_friday(year: int, month: int) -> dt.date:
+    """The 3rd Friday of a month — the standard monthly option expiry date."""
+    first = dt.date(year, month, 1)
+    first_friday = 1 + (4 - first.weekday()) % 7   # weekday: Mon=0 .. Fri=4
+    return dt.date(year, month, first_friday + 14)
+
+
+def classify_expiry(expiry: str) -> str:
+    """'monthly' if the expiry is its month's 3rd Friday, else 'weekly'."""
+    d = dt.datetime.strptime(expiry, "%Y-%m-%d").date()
+    return "monthly" if d == _third_friday(d.year, d.month) else "weekly"

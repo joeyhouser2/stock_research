@@ -7,17 +7,23 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import data, metrics
+from . import data, fundamentals, metrics
 from .config import REPO_ROOT, Settings
 
 GRID_COLUMNS = [
-    "expiry", "dte", "strike", "pct_otm", "mid", "annual_yield", "score", "if_called_yield",
-    "prob_otm", "delta", "downside_cushion", "breakeven", "iv", "hv", "iv_hv",
-    "open_interest", "volume", "spread_pct",
+    "expiry", "exp_type", "dte", "strike", "pct_otm", "mid", "annual_yield", "score",
+    "if_called_yield", "prob_otm", "delta", "downside_cushion", "breakeven",
+    "iv", "hv", "iv_hv", "open_interest", "volume", "spread_pct",
 ]
 
 
-def build(ticker: str, settings: Settings, *, apply_liquidity: bool = False) -> tuple[pd.DataFrame, dict]:
+def build(
+    ticker: str,
+    settings: Settings,
+    *,
+    apply_liquidity: bool = False,
+    with_value: bool = False,
+) -> tuple[pd.DataFrame, dict]:
     """Return (grid DataFrame, header info) for one ticker.
 
     By default the deep dive shows *all* OTM strikes in the DTE window (liquidity
@@ -35,6 +41,9 @@ def build(ticker: str, settings: Settings, *, apply_liquidity: bool = False) -> 
     for expiry in data.list_expirations(ticker):
         dte = data.days_to_expiry(expiry, today)
         if dte < settings.min_dte or dte > settings.max_dte:
+            continue
+        exp_type = data.classify_expiry(expiry)
+        if settings.expiry_type != "any" and exp_type != settings.expiry_type:
             continue
         chain = data.get_call_chain(ticker, expiry)
         if chain.empty:
@@ -60,6 +69,7 @@ def build(ticker: str, settings: Settings, *, apply_liquidity: bool = False) -> 
             ):
                 continue
             stat["expiry"] = expiry
+            stat["exp_type"] = exp_type
             rows.append(stat)
 
     grid = pd.DataFrame(rows).reindex(columns=GRID_COLUMNS) if rows else pd.DataFrame(columns=GRID_COLUMNS)
@@ -73,6 +83,7 @@ def build(ticker: str, settings: Settings, *, apply_liquidity: bool = False) -> 
         "size_b": round(snap.size_usd / 1e9, 2),
         "dividend_yield": snap.dividend_yield,
         "hv": hv,
+        "value": fundamentals.compute(snap.info, snap.price) if with_value else None,
     }
     return grid, header
 
@@ -81,19 +92,36 @@ def render_text(grid: pd.DataFrame, header: dict) -> str:
     """Format the grid + header as a console-friendly string."""
     h = header
     size_label = "AUM" if h["quote_type"] == "ETF" else "Mkt cap"
+    hv_str = f"HV {h['hv']*100:.1f}%" if h["hv"] else "HV n/a"
     lines = [
         f"\n{h['ticker']}  ({h['quote_type']})   spot ${h['price']:.2f}   "
-        f"{size_label} ${h['size_b']:.1f}B   "
-        f"div {h['dividend_yield']*100:.2f}%   "
-        f"HV {h['hv']*100:.1f}%" if h["hv"] else
-        f"\n{h['ticker']}  ({h['quote_type']})   spot ${h['price']:.2f}   "
-        f"{size_label} ${h['size_b']:.1f}B   div {h['dividend_yield']*100:.2f}%   HV n/a",
+        f"{size_label} ${h['size_b']:.1f}B   div {h['dividend_yield']*100:.2f}%   {hv_str}"
     ]
+    if h.get("value"):
+        lines.append("  value:  " + _format_value(h["value"]))
     if grid.empty:
         lines.append("  No OTM calls in the configured DTE / OTM window.")
         return "\n".join(lines)
     lines.append(grid.to_string(index=False))
     return "\n".join(lines)
+
+
+def _format_value(value: dict) -> str:
+    """One-line summary of the underlying's valuation metrics."""
+    def pct(key):
+        v = value.get(key)
+        return f"{v*100:+.1f}%" if v is not None else "n/a"
+
+    def num(key):
+        v = value.get(key)
+        return f"{v:.2f}" if v is not None else "n/a"
+
+    return (
+        f"P/E {num('trailing_pe')} (fwd {num('forward_pe')})   "
+        f"PEG {num('peg')}   P/B {num('price_to_book')}   "
+        f"margin {pct('profit_margin')}   ROE {pct('roe')}   "
+        f"off 52w-high {pct('pct_off_52w_high')}   analyst {pct('analyst_upside')}"
+    )
 
 
 def save_charts(grid: pd.DataFrame, header: dict, out_dir: Path | None = None) -> list[Path]:

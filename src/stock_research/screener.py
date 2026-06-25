@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import data, metrics
+from . import data, fundamentals, metrics
 from .config import REPO_ROOT, Settings
 
 # Stable column order for the output CSV.
 COLUMNS = [
-    "ticker", "quote_type", "size_b", "expiry", "dte", "strike", "spot",
+    "ticker", "quote_type", "size_b", "expiry", "exp_type", "dte", "strike", "spot",
     "pct_otm", "mid", "annual_yield", "score", "if_called_yield", "prob_otm", "delta",
     "downside_cushion", "breakeven", "iv", "hv", "iv_hv",
     "open_interest", "volume", "spread_pct", "contract",
@@ -22,7 +22,18 @@ COLUMNS = [
 SORT_KEYS = ("annual_yield", "score", "if_called_yield", "prob_otm", "downside_cushion")
 
 
-def analyze_ticker(ticker: str, settings: Settings, *, verbose: bool = False) -> list[dict]:
+def output_columns(with_value: bool) -> list[str]:
+    """Full column list, with the value metrics appended when requested."""
+    return COLUMNS + (fundamentals.VALUE_COLUMNS if with_value else [])
+
+
+def analyze_ticker(
+    ticker: str,
+    settings: Settings,
+    *,
+    with_value: bool = False,
+    verbose: bool = False,
+) -> list[dict]:
     """Return stat rows for every OTM call on ``ticker`` passing the filters."""
     snap = data.get_snapshot(ticker)
     if snap is None:
@@ -33,12 +44,16 @@ def analyze_ticker(ticker: str, settings: Settings, *, verbose: bool = False) ->
         return []
 
     hv = data.historical_volatility(ticker, settings.hv_window)
+    value_cols = fundamentals.compute(snap.info, snap.price) if with_value else None
     today = dt.date.today()
     rows: list[dict] = []
 
     for expiry in data.list_expirations(ticker):
         dte = data.days_to_expiry(expiry, today)
         if dte < settings.min_dte or dte > settings.max_dte:
+            continue
+        exp_type = data.classify_expiry(expiry)
+        if settings.expiry_type != "any" and exp_type != settings.expiry_type:
             continue
         chain = data.get_call_chain(ticker, expiry)
         if chain.empty:
@@ -68,7 +83,10 @@ def analyze_ticker(ticker: str, settings: Settings, *, verbose: bool = False) ->
                 quote_type=snap.quote_type,
                 size_b=round(snap.size_usd / 1e9, 2),
                 expiry=expiry,
+                exp_type=exp_type,
             )
+            if value_cols is not None:
+                stat.update(value_cols)
             rows.append(stat)
 
     _log(verbose, f"  {ticker}: {len(rows)} qualifying OTM calls")
@@ -80,6 +98,7 @@ def run(
     settings: Settings,
     *,
     sort_by: str = "annual_yield",
+    with_value: bool = False,
     out_dir: Path | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
@@ -89,16 +108,19 @@ def run(
     all_rows: list[dict] = []
     for ticker in tickers:
         try:
-            all_rows.extend(analyze_ticker(ticker, settings, verbose=verbose))
+            all_rows.extend(
+                analyze_ticker(ticker, settings, with_value=with_value, verbose=verbose)
+            )
         except Exception as exc:  # one bad ticker shouldn't kill the run
             _log(verbose, f"  {ticker}: error {exc!r} — skipped")
 
+    columns = output_columns(with_value)
     if not all_rows:
         _log(verbose, "No qualifying contracts found.")
-        return pd.DataFrame(columns=COLUMNS)
+        return pd.DataFrame(columns=columns)
 
     df = pd.DataFrame(all_rows)
-    df = df.reindex(columns=COLUMNS)
+    df = df.reindex(columns=columns)
     df = df.sort_values(sort_by, ascending=False, na_position="last").reset_index(drop=True)
     df = df.head(settings.top)
 

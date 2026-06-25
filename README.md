@@ -22,6 +22,13 @@ matter for income-oriented covered-call / OTM-call writing, and gives you two vi
 | **Breakeven** | `stock_price − premium`, your effective cost basis. |
 | **IV / HV** | Implied vol vs. trailing realized (historical) vol — is the option rich or cheap? |
 | **Liquidity** | Bid/ask spread, open interest, and volume filters so only tradable strikes survive. |
+| **Underlying value** (`--value`) | P/E, forward P/E, PEG, price/book, EV/EBITDA, profit margin, ROE, position vs. 52-week high/low, and analyst-target upside — because writing calls can leave you holding the shares. |
+
+### Weekly vs. monthly expirations
+
+Every contract is tagged `exp_type` = `monthly` (the standard 3rd-Friday expiry) or
+`weekly` (anything else). Filter with `--weekly` or `--monthly`. `--weekly` also
+auto-narrows the DTE window to 1–14 days (override with `--min-dte`/`--max-dte`).
 
 > ⚠️ Yahoo data is delayed and occasionally incomplete; mid-prices approximate where you'd
 > actually fill. Treat outputs as research, not trade signals. Not investment advice.
@@ -46,6 +53,12 @@ stock-research screen --min-dte 25 --max-dte 45 --min-otm 0.03 --max-otm 0.10 --
 
 # Rank by the risk-adjusted score (yield × probability of expiring OTM) instead of raw yield
 stock-research screen --sort score
+
+# Weekly options only (auto-narrows to 1–14 DTE), with underlying value metrics
+stock-research screen --weekly --value
+
+# Standard monthly (3rd-Friday) expirations only
+stock-research screen --monthly
 
 # Deep dive on one ticker (prints a grid; --charts saves PNGs to output/)
 stock-research deepdive MSFT --charts
