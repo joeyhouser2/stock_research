@@ -30,6 +30,19 @@ Every contract is tagged `exp_type` = `monthly` (the standard 3rd-Friday expiry)
 `weekly` (anything else). Filter with `--weekly` or `--monthly`. `--weekly` also
 auto-narrows the DTE window to 1–14 days (override with `--min-dte`/`--max-dte`).
 
+### Value & risk filters
+
+| Flag | Effect |
+| --- | --- |
+| `--max-pe N` | Keep only underlyings with trailing P/E ≤ N (implies `--value`). |
+| `--max-forward-pe N` | Same, on forward P/E. |
+| `--max-peg N` | Same, on PEG. |
+| `--min-prob-otm F` | Keep only contracts with ≥ F probability of expiring OTM (e.g. `0.70`). |
+
+A P/E cap drops names whose P/E Yahoo doesn't report (most ETFs, occasionally
+loss-making companies) — if you ask for "good P/E" we won't pass through names whose
+P/E we can't see.
+
 > ⚠️ Yahoo data is delayed and occasionally incomplete; mid-prices approximate where you'd
 > actually fill. Treat outputs as research, not trade signals. Not investment advice.
 
@@ -59,6 +72,13 @@ stock-research screen --weekly --value
 
 # Standard monthly (3rd-Friday) expirations only
 stock-research screen --monthly
+
+# Best weekly OTM calls on reasonably-valued names (trailing P/E ≤ 20),
+# ranked by risk-adjusted score. --max-pe implies --value.
+stock-research screen --weekly --max-pe 20 --sort score
+
+# Cap assignment risk: only strikes with ≥70% chance of expiring worthless
+stock-research screen --weekly --min-prob-otm 0.70
 
 # Deep dive on one ticker (prints a grid; --charts saves PNGs to output/)
 stock-research deepdive MSFT --charts

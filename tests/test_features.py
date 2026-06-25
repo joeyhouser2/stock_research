@@ -59,3 +59,26 @@ def test_fundamentals_peg_fallback_key():
 
 def test_empty_matches_columns():
     assert set(fundamentals.empty()) == set(fundamentals.VALUE_COLUMNS)
+
+
+# --- value filters ---------------------------------------------------------
+
+def test_pe_filter_passes_and_fails():
+    from stock_research.config import Settings
+    from stock_research.screener import _passes_value_filters, _value_active
+
+    cheap = {"trailing_pe": 18.0, "forward_pe": 15.0, "peg": 1.2}
+    rich = {"trailing_pe": 45.0, "forward_pe": 40.0, "peg": 3.5}
+    missing = {"trailing_pe": None, "forward_pe": None, "peg": None}
+
+    capped = Settings(max_pe=25.0)
+    assert _value_active(capped, with_value=False) is True
+    assert _passes_value_filters(cheap, capped) is True
+    assert _passes_value_filters(rich, capped) is False
+    # No P/E available (e.g. ETF) fails a P/E cap rather than sneaking through.
+    assert _passes_value_filters(missing, capped) is False
+
+    # With no caps set, everything passes and value isn't forced on.
+    none = Settings()
+    assert _value_active(none, with_value=False) is False
+    assert _passes_value_filters(rich, none) is True

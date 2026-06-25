@@ -19,6 +19,13 @@ class Settings:
     min_dte: int = 20
     max_dte: int = 50
     expiry_type: str = "any"   # "any" | "weekly" | "monthly"
+
+    # Underlying value filters (None = off). A contract is dropped when its
+    # underlying's metric is above the cap or missing the figure entirely.
+    max_pe: float | None = None
+    max_forward_pe: float | None = None
+    max_peg: float | None = None
+    min_prob_otm: float | None = None
     min_otm: float = 0.02
     max_otm: float = 0.15
     min_open_interest: int = 50

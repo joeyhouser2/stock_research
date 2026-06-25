@@ -45,6 +45,15 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--top", type=int, help="Number of ranked rows to keep.")
     sc.add_argument("--sort", choices=screener.SORT_KEYS, default="annual_yield",
                     help="Rank by this column, descending (default: annual_yield).")
+    sc.add_argument("--max-pe", type=float,
+                    help="Only underlyings with trailing P/E at or below this (implies --value).")
+    sc.add_argument("--max-forward-pe", type=float,
+                    help="Only underlyings with forward P/E at or below this (implies --value).")
+    sc.add_argument("--max-peg", type=float,
+                    help="Only underlyings with PEG at or below this (implies --value).")
+    sc.add_argument("--min-prob-otm", type=float,
+                    help="Only contracts with at least this probability of expiring OTM "
+                         "(0.70 = 70%%), to cap assignment risk.")
     sc.add_argument("--tickers", nargs="+", help="Override the universe with these tickers.")
     sc.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
 
@@ -86,6 +95,10 @@ def _resolved_settings(args) -> "object":
         max_spread_pct=getattr(args, "max_spread_pct", None),
         hv_window=getattr(args, "hv_window", None),
         top=getattr(args, "top", None),
+        max_pe=getattr(args, "max_pe", None),
+        max_forward_pe=getattr(args, "max_forward_pe", None),
+        max_peg=getattr(args, "max_peg", None),
+        min_prob_otm=getattr(args, "min_prob_otm", None),
     )
 
 

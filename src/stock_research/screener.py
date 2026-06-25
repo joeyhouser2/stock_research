@@ -22,6 +22,35 @@ COLUMNS = [
 SORT_KEYS = ("annual_yield", "score", "if_called_yield", "prob_otm", "downside_cushion")
 
 
+# Map each value-filter setting to the fundamentals column it caps.
+_PE_FILTERS = {
+    "max_pe": "trailing_pe",
+    "max_forward_pe": "forward_pe",
+    "max_peg": "peg",
+}
+
+
+def _value_active(settings: Settings, with_value: bool) -> bool:
+    """True if value metrics must be computed — explicitly asked, or a cap is set."""
+    return with_value or any(getattr(settings, s) is not None for s in _PE_FILTERS)
+
+
+def _passes_value_filters(value_cols: dict | None, settings: Settings) -> bool:
+    """True if the underlying clears every active P/E-style cap.
+
+    A cap with no figure available (e.g. an ETF has no P/E) fails — if you ask for
+    'good P/E' we won't pass through names whose P/E we can't see.
+    """
+    for setting, col in _PE_FILTERS.items():
+        cap = getattr(settings, setting)
+        if cap is None:
+            continue
+        val = value_cols.get(col) if value_cols else None
+        if val is None or val > cap:
+            return False
+    return True
+
+
 def output_columns(with_value: bool) -> list[str]:
     """Full column list, with the value metrics appended when requested."""
     return COLUMNS + (fundamentals.VALUE_COLUMNS if with_value else [])
@@ -37,14 +66,20 @@ def analyze_ticker(
     """Return stat rows for every OTM call on ``ticker`` passing the filters."""
     snap = data.get_snapshot(ticker)
     if snap is None:
-        _log(verbose, f"  {ticker}: no price/size data — skipped")
+        _log(verbose, f"  {ticker}: no price/size data - skipped")
         return []
     if snap.size_usd < settings.min_market_cap:
-        _log(verbose, f"  {ticker}: size ${snap.size_usd/1e9:.2f}B < floor — skipped")
+        _log(verbose, f"  {ticker}: size ${snap.size_usd/1e9:.2f}B < floor - skipped")
+        return []
+
+    need_value = _value_active(settings, with_value)
+    value_cols = fundamentals.compute(snap.info, snap.price) if need_value else None
+    if not _passes_value_filters(value_cols, settings):
+        pe = value_cols.get("trailing_pe") if value_cols else None
+        _log(verbose, f"  {ticker}: P/E {pe} fails value cap - skipped")
         return []
 
     hv = data.historical_volatility(ticker, settings.hv_window)
-    value_cols = fundamentals.compute(snap.info, snap.price) if with_value else None
     today = dt.date.today()
     rows: list[dict] = []
 
@@ -70,6 +105,10 @@ def analyze_ticker(
             if stat is None:
                 continue
             if not (settings.min_otm <= stat["pct_otm"] <= settings.max_otm):
+                continue
+            if settings.min_prob_otm is not None and (
+                stat["prob_otm"] is None or stat["prob_otm"] < settings.min_prob_otm
+            ):
                 continue
             if not metrics.passes_liquidity(
                 stat,
@@ -105,16 +144,18 @@ def run(
     """Scan every ticker, rank by ``sort_by`` (descending), and write a CSV."""
     if sort_by not in SORT_KEYS:
         raise ValueError(f"sort_by must be one of {SORT_KEYS}, got {sort_by!r}")
+    # If a P/E-style cap is set we compute (and therefore can show) value metrics.
+    show_value = _value_active(settings, with_value)
     all_rows: list[dict] = []
     for ticker in tickers:
         try:
             all_rows.extend(
-                analyze_ticker(ticker, settings, with_value=with_value, verbose=verbose)
+                analyze_ticker(ticker, settings, with_value=show_value, verbose=verbose)
             )
         except Exception as exc:  # one bad ticker shouldn't kill the run
-            _log(verbose, f"  {ticker}: error {exc!r} — skipped")
+            _log(verbose, f"  {ticker}: error {exc!r} - skipped")
 
-    columns = output_columns(with_value)
+    columns = output_columns(show_value)
     if not all_rows:
         _log(verbose, "No qualifying contracts found.")
         return pd.DataFrame(columns=columns)
