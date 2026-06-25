@@ -1,0 +1,26 @@
+# Default screen parameters. Override any of these on the CLI (e.g. --min-dte 25).
+
+# Annual risk-free rate used for Black-Scholes delta / probability (e.g. 3-month T-bill).
+risk_free_rate: 0.04
+
+# Minimum market cap (stocks) or assets under management (ETFs), in USD.
+min_market_cap: 1_000_000_000
+
+# Days-to-expiry window to consider.
+min_dte: 20
+max_dte: 50
+
+# How far out of the money, as a fraction of spot. 0.02 = 2% above spot, 0.15 = 15% above.
+min_otm: 0.02
+max_otm: 0.15
+
+# Liquidity filters — contracts failing any of these are dropped.
+min_open_interest: 50
+min_volume: 1
+max_spread_pct: 0.15        # (ask - bid) / mid
+
+# Trailing window (trading days) for realized/historical volatility.
+hv_window: 30
+
+# How many ranked rows the screener keeps.
+top: 40

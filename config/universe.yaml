@@ -1,0 +1,93 @@
+# Watchlist for the screener. Market cap / AUM is re-verified at runtime, so anything
+# that drops below the $1B floor is skipped automatically. Add or remove freely.
+
+etfs:
+  # Broad market
+  - SPY    # S&P 500
+  - QQQ    # Nasdaq 100
+  - IWM    # Russell 2000
+  - DIA    # Dow 30
+  - VTI    # Total US market
+  - MDY    # S&P MidCap 400
+  # International
+  - EEM    # Emerging markets
+  - EFA    # Developed ex-US
+  - FXI    # China large-cap
+  - EWZ    # Brazil
+  # Sectors
+  - XLF    # Financials
+  - XLE    # Energy
+  - XLK    # Technology
+  - XLV    # Health care
+  - XLI    # Industrials
+  - XLU    # Utilities
+  - XLP    # Consumer staples
+  - XLY    # Consumer discretionary
+  - SMH    # Semiconductors
+  - XBI    # Biotech
+  # Commodities & rates
+  - GLD    # Gold
+  - SLV    # Silver
+  - USO    # Crude oil
+  - TLT    # 20+ yr Treasuries
+  - HYG    # High-yield bonds
+  # Thematic / high-vol
+  - ARKK   # ARK Innovation
+
+stocks:
+  # Mega-cap tech
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - TSLA
+  - AVGO
+  - ORCL
+  - CRM
+  - ADBE
+  - NFLX
+  # Semis
+  - AMD
+  - INTC
+  - MU
+  - QCOM
+  - TSM
+  # Financials
+  - JPM
+  - BAC
+  - GS
+  - WFC
+  - V
+  - MA
+  # Healthcare
+  - UNH
+  - JNJ
+  - LLY
+  - PFE
+  - MRK
+  # Energy / industrials
+  - XOM
+  - CVX
+  - CAT
+  - BA
+  - GE
+  # Consumer
+  - WMT
+  - KO
+  - PEP
+  - MCD
+  - HD
+  - NKE
+  - DIS
+  - SBUX
+  # High-volatility / retail favorites
+  - PLTR
+  - COIN
+  - MSTR
+  - SOFI
+  - F
+  - T
+  - UBER
+  - SHOP
