@@ -9,11 +9,45 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import time
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+# Retry policy for transient Yahoo failures (rate limits, flaky connections).
+RETRY_ATTEMPTS = 4
+RETRY_BASE_DELAY = 1.5      # seconds; doubles each attempt
+RATE_LIMIT_FACTOR = 3       # extra backoff multiplier when it's clearly a rate limit
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    blob = f"{type(exc).__name__} {exc}".lower()
+    compact = blob.replace(" ", "")
+    return "ratelimit" in compact or "toomanyrequests" in compact or "429" in blob
+
+
+def _retry(fn, *, attempts: int = RETRY_ATTEMPTS, base_delay: float = RETRY_BASE_DELAY):
+    """Call ``fn`` with exponential backoff, longer when it's a rate limit.
+
+    Re-raises the last exception if every attempt fails; callers keep their own
+    try/except to fall back to None/empty after that.
+    """
+    delay = base_delay
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - transient; retried or re-raised
+            last = exc
+            if attempt == attempts - 1:
+                break
+            wait = delay * (RATE_LIMIT_FACTOR if _is_rate_limit(exc) else 1)
+            time.sleep(wait)
+            delay *= 2
+    assert last is not None
+    raise last
 
 
 @dataclass
@@ -38,7 +72,7 @@ def get_snapshot(ticker: str) -> TickerSnapshot | None:
 
     info: dict = {}
     try:
-        info = tk.get_info() or {}
+        info = _retry(tk.get_info) or {}
     except Exception:
         info = {}
 
@@ -81,7 +115,7 @@ def get_size(ticker: str) -> tuple[float | None, str]:
     Returns ``(None, "")`` when Yahoo has no size, so the caller drops the name.
     """
     try:
-        info = yf.Ticker(ticker).get_info() or {}
+        info = _retry(yf.Ticker(ticker).get_info) or {}
     except Exception:
         return None, ""
     quote_type = (info.get("quoteType") or "").upper()
@@ -115,7 +149,7 @@ def _last_price(tk: "yf.Ticker") -> float | None:
 def historical_volatility(ticker: str, window: int = 30) -> float | None:
     """Annualized realized volatility from trailing daily log returns."""
     try:
-        hist = yf.Ticker(ticker).history(period=f"{max(window * 2, 60)}d")
+        hist = _retry(lambda: yf.Ticker(ticker).history(period=f"{max(window * 2, 60)}d"))
     except Exception:
         return None
     closes = hist["Close"].dropna() if "Close" in hist else pd.Series(dtype=float)
@@ -131,7 +165,7 @@ def historical_volatility(ticker: str, window: int = 30) -> float | None:
 def list_expirations(ticker: str) -> list[str]:
     """Available option expiry dates ('YYYY-MM-DD'); empty if none/unsupported."""
     try:
-        return list(yf.Ticker(ticker).options or [])
+        return list(_retry(lambda: yf.Ticker(ticker).options) or [])
     except Exception:
         return []
 
@@ -139,7 +173,7 @@ def list_expirations(ticker: str) -> list[str]:
 def get_call_chain(ticker: str, expiry: str) -> pd.DataFrame:
     """Call side of the chain for one expiry. Empty DataFrame on failure."""
     try:
-        chain = yf.Ticker(ticker).option_chain(expiry)
+        chain = _retry(lambda: yf.Ticker(ticker).option_chain(expiry))
     except Exception:
         return pd.DataFrame()
     calls = getattr(chain, "calls", None)
