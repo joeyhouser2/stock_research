@@ -140,22 +140,29 @@ def run(
     *,
     sort_by: str = "annual_yield",
     with_value: bool = False,
+    throttle: float = 0.0,
     out_dir: Path | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """Scan every ticker, rank by ``sort_by`` (descending), and write a CSV."""
+    """Scan every ticker, rank by ``sort_by`` (descending), and write a CSV.
+
+    ``throttle`` pauses between tickers to ease Yahoo rate limits — important when
+    scanning hundreds of names, since each does several option-chain requests.
+    """
     if sort_by not in SORT_KEYS:
         raise ValueError(f"sort_by must be one of {SORT_KEYS}, got {sort_by!r}")
     # If a P/E-style cap is set we compute (and therefore can show) value metrics.
     show_value = _value_active(settings, with_value)
     all_rows: list[dict] = []
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers):
         try:
             all_rows.extend(
                 analyze_ticker(ticker, settings, with_value=show_value, verbose=verbose)
             )
         except Exception as exc:  # one bad ticker shouldn't kill the run
             _log(verbose, f"  {ticker}: error {exc!r} - skipped")
+        if throttle and i < len(tickers) - 1:
+            time.sleep(throttle)
 
     columns = output_columns(show_value)
     if not all_rows:
@@ -250,7 +257,7 @@ def run_weeklys(
         return pd.DataFrame(columns=output_columns(_value_active(settings, with_value)))
     _log(verbose, f"\nScanning option chains for {len(tickers)} symbols...")
     return run(tickers, settings, sort_by=sort_by, with_value=with_value,
-               out_dir=out_dir, verbose=verbose)
+               throttle=throttle, out_dir=out_dir, verbose=verbose)
 
 
 def _log(verbose: bool, msg: str) -> None:
