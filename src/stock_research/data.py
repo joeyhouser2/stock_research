@@ -75,6 +75,24 @@ def get_snapshot(ticker: str) -> TickerSnapshot | None:
     )
 
 
+def get_size(ticker: str) -> tuple[float | None, str]:
+    """Just (size_usd, quote_type) for the market-cap gate — cheap universe pass.
+
+    Returns ``(None, "")`` when Yahoo has no size, so the caller drops the name.
+    """
+    try:
+        info = yf.Ticker(ticker).get_info() or {}
+    except Exception:
+        return None, ""
+    quote_type = (info.get("quoteType") or "").upper()
+    size = info.get("marketCap") or info.get("totalAssets")
+    if size is None:
+        shares = info.get("sharesOutstanding")
+        price = info.get("regularMarketPrice") or info.get("currentPrice")
+        size = shares * price if shares and price else None
+    return (float(size) if size else None), quote_type
+
+
 def _last_price(tk: "yf.Ticker") -> float | None:
     """Most-reliable current price across yfinance's shifting APIs."""
     try:

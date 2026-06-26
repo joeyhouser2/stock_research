@@ -80,6 +80,14 @@ stock-research screen --weekly --max-pe 20 --sort score
 # Cap assignment risk: only strikes with ≥70% chance of expiring worthless
 stock-research screen --weekly --min-prob-otm 0.70
 
+# Screen the ENTIRE weeklies universe (every US symbol with weekly options,
+# ~680 names) instead of the watchlist, gated to market cap / AUM ≥ $1B.
+stock-research fetch-weeklys                 # download the Cboe list (once)
+stock-research screen --weeklys --weekly --max-pe 25 --sort score
+
+# Faster first pass: only the 150 largest qualifying names, gentle on rate limits
+stock-research screen --weeklys --max-tickers 150 --throttle 0.3
+
 # Deep dive on one ticker (prints a grid; --charts saves PNGs to output/)
 stock-research deepdive MSFT --charts
 ```
@@ -91,10 +99,30 @@ python -m stock_research.cli screen
 python -m stock_research.cli deepdive QQQ
 ```
 
+## Universe: watchlist vs. the whole weeklies market
+
+By default the screener scans **`config/universe.yaml`** — a hand-picked watchlist
+(~75 ETFs + large-caps). Pass **`--weeklys`** to instead screen *every* US symbol that
+has weekly options, sourced from Cboe's official
+[Available Weeklys](https://www.cboe.com/available_weeklys/) list (~680 names):
+
+1. `fetch-weeklys` downloads + parses the Cboe CSV into `config/weeklys.csv`
+   (a checked-in copy is the offline fallback).
+2. A cached **market-cap gate** keeps only names ≥ $1B. Sizes are cached to
+   `cache/marketcaps.json` for 7 days (`--cache-ttl-days`), so the slow, rate-limited
+   pass runs once and reruns are fast — only the survivors' option chains are re-fetched.
+3. `--max-tickers N` caps the scan at the N largest qualifying names; `--throttle SECS`
+   paces the size lookups to avoid Yahoo rate limits.
+
+> The first full `--weeklys` run does ~680 size lookups (a few minutes, occasionally
+> throttled by Yahoo). After that the cache makes it quick. Use `--max-tickers` /
+> `--throttle` on the first run if you hit rate limiting.
+
 ## Configuration
 
-- **`config/universe.yaml`** — the watchlist (stocks + ETFs). The screener re-verifies each
-  ticker's market cap / AUM ≥ $1B at runtime and drops anything below.
+- **`config/universe.yaml`** — the default watchlist (stocks + ETFs). The screener
+  re-verifies each ticker's market cap / AUM ≥ $1B at runtime and drops anything below.
+- **`config/weeklys.csv`** — the cached Cboe weeklies universe (used by `--weeklys`).
 - **`config/settings.yaml`** — defaults: risk-free rate, DTE window, OTM band, and liquidity thresholds.
 
 ## Layout

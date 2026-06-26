@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 from pathlib import Path
 
 import pandas as pd
 
-from . import data, fundamentals, metrics
+from . import cboe, data, fundamentals, metrics
+from .cache import MarketCapCache
 from .config import REPO_ROOT, Settings
 
 # Stable column order for the output CSV.
@@ -172,6 +174,83 @@ def run(
     df.to_csv(out_path, index=False)
     _log(verbose, f"\nWrote {len(df)} rows -> {out_path}")
     return df
+
+
+def qualifying_universe(
+    settings: Settings,
+    *,
+    refresh_weeklys: bool = False,
+    cache_ttl_days: float = 7,
+    throttle: float = 0.0,
+    max_tickers: int | None = None,
+    verbose: bool = True,
+) -> list[str]:
+    """Symbols from the Cboe weeklys list whose size clears ``min_market_cap``.
+
+    This is the slow pass — one size lookup per symbol — but it's cached, so only
+    cache-misses hit the network. When ``max_tickers`` is set, the survivors are
+    ranked by size (largest first) before truncation.
+    """
+    symbols = cboe.get_symbols(refresh_first=refresh_weeklys)
+    _log(verbose, f"Weeklys universe: {len(symbols)} symbols. "
+                  f"Filtering to market cap / AUM >= ${settings.min_market_cap/1e9:.1f}B...")
+
+    cache = MarketCapCache(ttl_days=cache_ttl_days)
+    survivors: list[tuple[str, float]] = []
+    misses = 0
+    for i, sym in enumerate(symbols, 1):
+        rec = cache.get(sym)
+        if rec is None:
+            size, quote_type = data.get_size(sym)
+            cache.put(sym, size, quote_type)
+            misses += 1
+            if throttle:
+                time.sleep(throttle)
+        else:
+            size = rec.get("size_usd")
+        if size is not None and size >= settings.min_market_cap:
+            survivors.append((sym, size))
+        if verbose and i % 50 == 0:
+            _log(verbose, f"  ...{i}/{len(symbols)} checked, {len(survivors)} qualify")
+    cache.save()
+
+    survivors.sort(key=lambda pair: pair[1], reverse=True)
+    qualified = [sym for sym, _ in survivors]
+    _log(verbose, f"{len(qualified)} symbols qualify "
+                  f"({misses} fetched, {len(symbols)-misses} from cache).")
+    if max_tickers is not None and len(qualified) > max_tickers:
+        _log(verbose, f"Capping to the {max_tickers} largest by size.")
+        qualified = qualified[:max_tickers]
+    return qualified
+
+
+def run_weeklys(
+    settings: Settings,
+    *,
+    sort_by: str = "annual_yield",
+    with_value: bool = False,
+    refresh_weeklys: bool = False,
+    cache_ttl_days: float = 7,
+    throttle: float = 0.0,
+    max_tickers: int | None = None,
+    out_dir: Path | None = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Screen the full $1B+ weeklys universe: gate by size, then scan survivors."""
+    tickers = qualifying_universe(
+        settings,
+        refresh_weeklys=refresh_weeklys,
+        cache_ttl_days=cache_ttl_days,
+        throttle=throttle,
+        max_tickers=max_tickers,
+        verbose=verbose,
+    )
+    if not tickers:
+        _log(verbose, "No symbols cleared the market-cap floor.")
+        return pd.DataFrame(columns=output_columns(_value_active(settings, with_value)))
+    _log(verbose, f"\nScanning option chains for {len(tickers)} symbols...")
+    return run(tickers, settings, sort_by=sort_by, with_value=with_value,
+               out_dir=out_dir, verbose=verbose)
 
 
 def _log(verbose: bool, msg: str) -> None:

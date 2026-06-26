@@ -55,7 +55,22 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Only contracts with at least this probability of expiring OTM "
                          "(0.70 = 70%%), to cap assignment risk.")
     sc.add_argument("--tickers", nargs="+", help="Override the universe with these tickers.")
+    sc.add_argument("--weeklys", action="store_true",
+                    help="Screen the full Cboe weeklys universe (every symbol with weekly "
+                         "options) instead of config/universe.yaml. Gated by --min-market-cap.")
+    sc.add_argument("--refresh-weeklys", action="store_true",
+                    help="Re-download the Cboe weeklys list before screening (implies --weeklys).")
+    sc.add_argument("--max-tickers", type=int,
+                    help="With --weeklys, cap the scan at the N largest qualifying names.")
+    sc.add_argument("--cache-ttl-days", type=float, default=7,
+                    help="How long cached market caps stay fresh (default: 7 days).")
+    sc.add_argument("--throttle", type=float, default=0.0,
+                    help="Seconds to pause between size lookups, to ease Yahoo rate limits.")
     sc.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
+    fw = sub.add_parser("fetch-weeklys",
+                        help="Download the Cboe weeklys list to config/weeklys.csv.")
+    fw.add_argument("--quiet", action="store_true", help="Only print the final count.")
 
     dd = sub.add_parser("deepdive", help="Full OTM-call stat grid for one ticker.")
     dd.add_argument("ticker", help="Ticker symbol, e.g. MSFT.")
@@ -104,20 +119,50 @@ def _resolved_settings(args) -> "object":
 
 def _cmd_screen(args) -> int:
     settings = _resolved_settings(args)
-    tickers = [t.upper() for t in args.tickers] if args.tickers else load_universe()
-    if not args.quiet:
-        print(f"Screening {len(tickers)} tickers "
-              f"(DTE {settings.min_dte}-{settings.max_dte}, "
-              f"OTM {settings.min_otm:.0%}-{settings.max_otm:.0%}, "
-              f"{settings.expiry_type} expiries), "
-              f"ranked by {args.sort}...")
-    df = screener.run(tickers, settings, sort_by=args.sort,
-                      with_value=args.value, verbose=not args.quiet)
+    verbose = not args.quiet
+    use_weeklys = args.weeklys or args.refresh_weeklys
+
+    if use_weeklys:
+        if verbose:
+            print(f"Screening the Cboe weeklys universe "
+                  f"(DTE {settings.min_dte}-{settings.max_dte}, "
+                  f"OTM {settings.min_otm:.0%}-{settings.max_otm:.0%}, "
+                  f"{settings.expiry_type} expiries), ranked by {args.sort}...")
+        df = screener.run_weeklys(
+            settings, sort_by=args.sort, with_value=args.value,
+            refresh_weeklys=args.refresh_weeklys, cache_ttl_days=args.cache_ttl_days,
+            throttle=args.throttle, max_tickers=args.max_tickers, verbose=verbose,
+        )
+    else:
+        tickers = [t.upper() for t in args.tickers] if args.tickers else load_universe()
+        if verbose:
+            print(f"Screening {len(tickers)} tickers "
+                  f"(DTE {settings.min_dte}-{settings.max_dte}, "
+                  f"OTM {settings.min_otm:.0%}-{settings.max_otm:.0%}, "
+                  f"{settings.expiry_type} expiries), "
+                  f"ranked by {args.sort}...")
+        df = screener.run(tickers, settings, sort_by=args.sort,
+                          with_value=args.value, verbose=verbose)
+
     if df.empty:
         return 1
     pd.set_option("display.max_columns", None, "display.width", 200)
     print("\nTop results:")
     print(df.head(min(len(df), 20)).to_string(index=False))
+    return 0
+
+
+def _cmd_fetch_weeklys(args) -> int:
+    from . import cboe
+    try:
+        records = cboe.refresh()
+    except Exception as exc:
+        print(f"Error fetching Cboe weeklys list: {exc}", file=sys.stderr)
+        return 1
+    etfs = sum(1 for r in records if r["type"] == "ETF")
+    equities = sum(1 for r in records if r["type"] == "EQUITY")
+    print(f"Saved {len(records)} weeklys symbols ({equities} equities, {etfs} ETFs/ETNs) "
+          f"-> {cboe.WEEKLYS_CSV}")
     return 0
 
 
@@ -142,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
         return _cmd_screen(args)
+    if args.command == "fetch-weeklys":
+        return _cmd_fetch_weeklys(args)
     if args.command == "deepdive":
         return _cmd_deepdive(args)
     return 2
