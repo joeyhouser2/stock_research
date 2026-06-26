@@ -34,6 +34,13 @@ class Settings:
     hv_window: int = 30
     top: int = 40
 
+    # Expected-return (simulation drift) model. See expected_return.py.
+    drift_model: str = "fundamental"   # "fixed" | "fundamental" | "analyst" | "blend"
+    equity_risk_premium: float = 0.045
+    pe_anchor: float | None = None     # None -> PEG=1 / market-default anchor
+    pe_reversion_years: float = 5.0
+    pe_reversion_shrink: float = 1.0
+
 
 def load_settings(path: Path | None = None) -> Settings:
     path = path or (CONFIG_DIR / "settings.yaml")

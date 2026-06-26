@@ -24,3 +24,15 @@ hv_window: 30
 
 # How many ranked rows the screener keeps.
 top: 40
+
+# --- Simulation drift (expected_return.py) -------------------------------------
+# How `simulate` sets the real-world drift when you don't pass --drift.
+#   fixed       -> flat market baseline (risk_free_rate + equity_risk_premium)
+#   fundamental -> Grinold-Kroner: dividend yield + earnings growth + P/E reversion
+#   analyst     -> annualized mean-analyst-target-implied return
+#   blend       -> average of fundamental and analyst
+drift_model: fundamental
+equity_risk_premium: 0.045   # baseline equity premium over the risk-free rate
+pe_anchor:                   # blank -> PEG=1 (anchor ~ 100*growth) / market default
+pe_reversion_years: 5.0      # horizon over which P/E reverts to the anchor
+pe_reversion_shrink: 1.0     # 0..1 weight on the valuation-reversion term

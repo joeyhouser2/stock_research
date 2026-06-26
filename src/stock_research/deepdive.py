@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import data, fundamentals, metrics
+from . import data, fundamentals, metrics, simulate
 from .config import REPO_ROOT, Settings
 
 GRID_COLUMNS = [
@@ -16,6 +16,19 @@ GRID_COLUMNS = [
     "iv", "hv", "iv_hv", "open_interest", "volume", "spread_pct",
 ]
 
+# Monte-Carlo columns added by --simulate: simulated P(expires OTM) and P(touch
+# strike), the fat-tailed, drift-aware analogues of the lognormal prob_otm.
+SIM_COLUMNS = ["sim_otm", "sim_touch"]
+SIM_LOOKBACK = 504
+
+
+def grid_columns(simulate_risk: bool) -> list[str]:
+    """Grid column order, with the simulation columns slotted next to prob_otm."""
+    if not simulate_risk:
+        return list(GRID_COLUMNS)
+    i = GRID_COLUMNS.index("prob_otm") + 1
+    return GRID_COLUMNS[:i] + SIM_COLUMNS + GRID_COLUMNS[i:]
+
 
 def build(
     ticker: str,
@@ -23,12 +36,22 @@ def build(
     *,
     apply_liquidity: bool = False,
     with_value: bool = False,
+    simulate_risk: bool = False,
+    sim_model: str = "garch",
+    sim_paths: int = 50_000,
+    sim_seed: int = 12345,
+    sim_lookback: int = SIM_LOOKBACK,
 ) -> tuple[pd.DataFrame, dict]:
     """Return (grid DataFrame, header info) for one ticker.
 
     By default the deep dive shows *all* OTM strikes in the DTE window (liquidity
     is reported, not filtered) so you can see the whole surface. Pass
     ``apply_liquidity=True`` to drop illiquid strikes.
+
+    With ``simulate_risk=True`` each strike also gets Monte-Carlo ``sim_otm``
+    (P(expires OTM)) and ``sim_touch`` (P(strike is touched before expiry)) — the
+    fat-tailed, drift-aware analogues of the lognormal ``prob_otm``. One ensemble
+    is run per expiry; the GARCH fit and valuation drift are computed once.
     """
     snap = data.get_snapshot(ticker)
     if snap is None:
@@ -37,6 +60,17 @@ def build(
     hv = data.historical_volatility(ticker, settings.hv_window)
     today = dt.date.today()
     rows: list[dict] = []
+
+    # One-time simulation setup: returns history, valuation drift, and (for the
+    # GARCH model) a single fit reused across every expiry horizon.
+    drift = garch = sim_returns = sim_backend = None
+    if simulate_risk:
+        sim_returns = data.daily_log_returns(ticker, sim_lookback)
+        drift, garch = simulate.prepare_drift_and_garch(
+            info=snap.info, price=snap.price, dividend_yield=snap.dividend_yield,
+            returns=sim_returns, settings=settings, sim_model=sim_model)
+
+    cols = grid_columns(simulate_risk)
 
     for expiry in data.list_expirations(ticker):
         dte = data.days_to_expiry(expiry, today)
@@ -48,6 +82,16 @@ def build(
         chain = data.get_call_chain(ticker, expiry)
         if chain.empty:
             continue
+
+        sim = None
+        if simulate_risk:
+            sim = simulate.simulate(
+                spot=snap.price, returns=sim_returns, horizon_days=dte,
+                model=sim_model, mu=drift.annual_drift, garch=garch,
+                n_paths=sim_paths, seed=sim_seed,
+            )
+            sim_backend = sim.backend
+
         for _, contract in chain.iterrows():
             stat = metrics.compute(
                 row=contract,
@@ -70,9 +114,13 @@ def build(
                 continue
             stat["expiry"] = expiry
             stat["exp_type"] = exp_type
+            if sim is not None:
+                k = stat["strike"]
+                stat["sim_otm"] = round(sim.prob_terminal_below(k), 4)
+                stat["sim_touch"] = round(sim.prob_touch(k), 4)
             rows.append(stat)
 
-    grid = pd.DataFrame(rows).reindex(columns=GRID_COLUMNS) if rows else pd.DataFrame(columns=GRID_COLUMNS)
+    grid = pd.DataFrame(rows).reindex(columns=cols) if rows else pd.DataFrame(columns=cols)
     if not grid.empty:
         grid = grid.sort_values(["expiry", "strike"]).reset_index(drop=True)
 
@@ -84,6 +132,10 @@ def build(
         "dividend_yield": snap.dividend_yield,
         "hv": hv,
         "value": fundamentals.compute(snap.info, snap.price) if with_value else None,
+        "drift": drift,
+        "sim_model": sim_model if simulate_risk else None,
+        "sim_paths": sim_paths if simulate_risk else None,
+        "sim_backend": sim_backend,
     }
     return grid, header
 
@@ -99,6 +151,9 @@ def render_text(grid: pd.DataFrame, header: dict) -> str:
     ]
     if h.get("value"):
         lines.append("  value:  " + _format_value(h["value"]))
+    if h.get("drift") is not None:
+        lines.append(f"  sim:    {h['drift'].summary()}   model={h['sim_model']}   "
+                     f"paths={h['sim_paths']:,}   backend={h['sim_backend']}")
     if grid.empty:
         lines.append("  No OTM calls in the configured DTE / OTM window.")
         return "\n".join(lines)

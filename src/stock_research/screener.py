@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import cboe, data, fundamentals, metrics
+from . import cboe, data, fundamentals, metrics, simulate
 from .cache import MarketCapCache
 from .config import REPO_ROOT, Settings
 
@@ -19,6 +19,10 @@ COLUMNS = [
     "downside_cushion", "breakeven", "iv", "hv", "iv_hv",
     "open_interest", "volume", "spread_pct", "contract",
 ]
+
+# Monte-Carlo columns added by --simulate, slotted next to the BS prob_otm.
+SIM_COLUMNS = ["sim_otm", "sim_touch"]
+SIM_LOOKBACK = 504
 
 # Columns the screener can rank by (descending).
 SORT_KEYS = ("annual_yield", "score", "if_called_yield", "prob_otm", "downside_cushion")
@@ -53,9 +57,13 @@ def _passes_value_filters(value_cols: dict | None, settings: Settings) -> bool:
     return True
 
 
-def output_columns(with_value: bool) -> list[str]:
-    """Full column list, with the value metrics appended when requested."""
-    return COLUMNS + (fundamentals.VALUE_COLUMNS if with_value else [])
+def output_columns(with_value: bool, simulate_risk: bool = False) -> list[str]:
+    """Full column list: sim columns next to prob_otm, value metrics appended."""
+    cols = list(COLUMNS)
+    if simulate_risk:
+        i = cols.index("prob_otm") + 1
+        cols = cols[:i] + SIM_COLUMNS + cols[i:]
+    return cols + (fundamentals.VALUE_COLUMNS if with_value else [])
 
 
 def analyze_ticker(
@@ -63,6 +71,9 @@ def analyze_ticker(
     settings: Settings,
     *,
     with_value: bool = False,
+    simulate_risk: bool = False,
+    sim_model: str = "garch",
+    sim_paths: int = 20_000,
     verbose: bool = False,
 ) -> list[dict]:
     """Return stat rows for every OTM call on ``ticker`` passing the filters."""
@@ -82,6 +93,15 @@ def analyze_ticker(
         return []
 
     hv = data.historical_volatility(ticker, settings.hv_window)
+
+    # One-time simulation setup (drift + GARCH fit) reused across every expiry.
+    drift = garch = sim_returns = None
+    if simulate_risk:
+        sim_returns = data.daily_log_returns(ticker, SIM_LOOKBACK)
+        drift, garch = simulate.prepare_drift_and_garch(
+            info=snap.info, price=snap.price, dividend_yield=snap.dividend_yield,
+            returns=sim_returns, settings=settings, sim_model=sim_model)
+
     today = dt.date.today()
     rows: list[dict] = []
 
@@ -95,6 +115,11 @@ def analyze_ticker(
         chain = data.get_call_chain(ticker, expiry)
         if chain.empty:
             continue
+        sim = None
+        if simulate_risk:
+            sim = simulate.simulate(
+                spot=snap.price, returns=sim_returns, horizon_days=dte, model=sim_model,
+                mu=drift.annual_drift, garch=garch, n_paths=sim_paths, seed=12345)
         for _, contract in chain.iterrows():
             stat = metrics.compute(
                 row=contract,
@@ -126,6 +151,9 @@ def analyze_ticker(
                 expiry=expiry,
                 exp_type=exp_type,
             )
+            if sim is not None:
+                stat["sim_otm"] = round(sim.prob_terminal_below(stat["strike"]), 4)
+                stat["sim_touch"] = round(sim.prob_touch(stat["strike"]), 4)
             if value_cols is not None:
                 stat.update(value_cols)
             rows.append(stat)
@@ -140,6 +168,9 @@ def run(
     *,
     sort_by: str = "annual_yield",
     with_value: bool = False,
+    simulate_risk: bool = False,
+    sim_model: str = "garch",
+    sim_paths: int = 20_000,
     throttle: float = 0.0,
     out_dir: Path | None = None,
     verbose: bool = True,
@@ -148,6 +179,7 @@ def run(
 
     ``throttle`` pauses between tickers to ease Yahoo rate limits — important when
     scanning hundreds of names, since each does several option-chain requests.
+    With ``simulate_risk`` each contract also gets Monte-Carlo sim_otm / sim_touch.
     """
     if sort_by not in SORT_KEYS:
         raise ValueError(f"sort_by must be one of {SORT_KEYS}, got {sort_by!r}")
@@ -157,14 +189,16 @@ def run(
     for i, ticker in enumerate(tickers):
         try:
             all_rows.extend(
-                analyze_ticker(ticker, settings, with_value=show_value, verbose=verbose)
+                analyze_ticker(ticker, settings, with_value=show_value,
+                               simulate_risk=simulate_risk, sim_model=sim_model,
+                               sim_paths=sim_paths, verbose=verbose)
             )
         except Exception as exc:  # one bad ticker shouldn't kill the run
             _log(verbose, f"  {ticker}: error {exc!r} - skipped")
         if throttle and i < len(tickers) - 1:
             time.sleep(throttle)
 
-    columns = output_columns(show_value)
+    columns = output_columns(show_value, simulate_risk)
     if not all_rows:
         _log(verbose, "No qualifying contracts found.")
         return pd.DataFrame(columns=columns)
@@ -179,7 +213,13 @@ def run(
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"screen_{stamp}.csv"
     df.to_csv(out_path, index=False)
-    _log(verbose, f"\nWrote {len(df)} rows -> {out_path}")
+    if verbose:
+        from rich.console import Console
+        from rich.markup import escape
+        Console().print(
+            f"\n[bold green]Wrote[/] [bold]{len(df)}[/] rows "
+            f"[dim]-> {escape(str(out_path))}[/]"
+        )
     return df
 
 
@@ -236,6 +276,9 @@ def run_weeklys(
     *,
     sort_by: str = "annual_yield",
     with_value: bool = False,
+    simulate_risk: bool = False,
+    sim_model: str = "garch",
+    sim_paths: int = 20_000,
     refresh_weeklys: bool = False,
     cache_ttl_days: float = 7,
     throttle: float = 0.0,
@@ -254,9 +297,11 @@ def run_weeklys(
     )
     if not tickers:
         _log(verbose, "No symbols cleared the market-cap floor.")
-        return pd.DataFrame(columns=output_columns(_value_active(settings, with_value)))
+        return pd.DataFrame(columns=output_columns(_value_active(settings, with_value),
+                                                   simulate_risk))
     _log(verbose, f"\nScanning option chains for {len(tickers)} symbols...")
     return run(tickers, settings, sort_by=sort_by, with_value=with_value,
+               simulate_risk=simulate_risk, sim_model=sim_model, sim_paths=sim_paths,
                throttle=throttle, out_dir=out_dir, verbose=verbose)
 
 

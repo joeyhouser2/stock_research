@@ -15,7 +15,17 @@ dependencies = [
     "scipy>=1.10",
     "PyYAML>=6.0",
     "matplotlib>=3.7",
+    "rich>=13.0",
 ]
+
+[project.optional-dependencies]
+# GPU acceleration for the Monte-Carlo simulator. Optional: simulate.py runs on
+# NumPy (CPU) when torch/CUDA isn't present. Install a CUDA build of torch that
+# matches your driver (see pytorch.org); the bare `pip install .[gpu]` pulls the
+# default wheel which may be CPU-only.
+gpu = ["torch>=2.1"]
+# Web dashboard: `pip install -e ".[ui]"` then `streamlit run app.py`.
+ui = ["streamlit>=1.30"]
 
 [project.scripts]
 stock-research = "stock_research.cli:main"

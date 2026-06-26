@@ -162,6 +162,34 @@ def historical_volatility(ticker: str, window: int = 30) -> float | None:
     return float(daily * math.sqrt(252))
 
 
+def close_history(ticker: str, days: int = 1825) -> pd.Series:
+    """Date-indexed daily closes for backtesting. Empty Series on failure."""
+    try:
+        hist = _retry(lambda: yf.Ticker(ticker).history(period=f"{max(days, 60)}d"))
+    except Exception:
+        return pd.Series(dtype=float)
+    if "Close" not in hist:
+        return pd.Series(dtype=float)
+    return hist["Close"].dropna()
+
+
+def daily_log_returns(ticker: str, lookback_days: int = 504) -> np.ndarray:
+    """Trailing daily log returns, for fitting vol / GARCH / bootstrap models.
+
+    Returns an empty array (not None) on failure so the math layer can decide on
+    a fallback. ``lookback_days`` is in trading days of history to request.
+    """
+    try:
+        hist = _retry(lambda: yf.Ticker(ticker).history(period=f"{max(lookback_days, 60)}d"))
+    except Exception:
+        return np.array([])
+    closes = hist["Close"].dropna() if "Close" in hist else pd.Series(dtype=float)
+    if len(closes) < 2:
+        return np.array([])
+    log_ret = np.log(closes / closes.shift(1)).dropna()
+    return log_ret.to_numpy()
+
+
 def list_expirations(ticker: str) -> list[str]:
     """Available option expiry dates ('YYYY-MM-DD'); empty if none/unsupported."""
     try:
