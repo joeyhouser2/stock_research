@@ -19,6 +19,7 @@ matter for income-oriented covered-call / OTM-call writing, and gives you two vi
 | --- | --- |
 | **Annualized premium yield** | `premium / stock_price`, scaled to a year by days-to-expiry. The static income return if the call expires worthless. **This is the default ranking** — the top of the output is the highest-yielding contracts. |
 | **Score** | `annual_yield × prob_otm` — the annualized yield weighted by the chance you actually keep it. Use `--sort score` to rank by this risk-adjusted view instead of raw yield. |
+| **Score+** (`score_adj`) | `score × IV/HV` (capped) — the risk-adjusted yield *also* weighted by how rich the option's vol is. Best single "bang-for-buck" rank; pair with `--min-iv-hv`. |
 | **If-called yield** | Return if the stock is called away at the strike: `(premium + (strike − price)) / price`, annualized. |
 | **Probability OTM** | Lognormal `P(S_T < K)` from implied vol — the chance you keep the shares and the full premium. |
 | **Delta** | Black–Scholes call delta (≈ probability of assignment). |
@@ -42,6 +43,7 @@ auto-narrows the DTE window to 1–14 days (override with `--min-dte`/`--max-dte
 | `--max-forward-pe N` | Same, on forward P/E. |
 | `--max-peg N` | Same, on PEG. |
 | `--min-prob-otm F` | Keep only contracts with ≥ F probability of expiring OTM (e.g. `0.70`). |
+| `--min-iv-hv F` | Rich-vol gate: keep only contracts with IV/HV ≥ F (e.g. `1.2`) — i.e. you're paid more than the stock actually moves. Pair with `--sort score_adj`. |
 
 A P/E cap drops names whose P/E Yahoo doesn't report (most ETFs, occasionally
 loss-making companies) — if you ask for "good P/E" we won't pass through names whose
@@ -104,6 +106,28 @@ stock-research deepdive AAPL --simulate
 stock-research riskscan --horizon 45 --sort sharpe
 stock-research riskscan --weeklys --max-tickers 150 --throttle 0.3   # whole universe
 
+# Best "bang for buck" OTM writes: gate on rich vol, rank by edge-weighted score
+stock-research screen --weekly --min-iv-hv 1.2 --sort score_adj
+
+# Rank names as long-equity value buys (cheapness + quality + analyst upside)
+stock-research valuescan --sort value_score
+
+# Value picker: smaller names (cap band) passing multiple cheap-and-quality gates
+stock-research valuescan --min-market-cap 5e9 --max-market-cap 50e9 \
+    --max-pe 20 --max-peg 1.5 --min-roe 0.12 --min-upside 0.10
+
+# Honest odds of BUYING a call (vega-aware P&L distribution)
+stock-research longcall AAPL --expiry 2026-07-17 --strike 300
+
+# Log a daily option-chain snapshot to build implied-vol history (schedule this)
+stock-research log-chains --tickers AAPL MSFT NVDA
+
+# Download SEC EDGAR point-in-time fundamentals (the value-model data foundation)
+SEC_USER_AGENT="Your Name you@email" stock-research fetch-fundamentals AAPL MSFT --save
+
+# Build the as-of feature panel (EDGAR + prices + FRED macro) for a value model
+SEC_USER_AGENT="Your Name you@email" stock-research build-panel AAPL MSFT XOM --start 2020-01-01
+
 # Add the simulated assignment/touch columns to the option screen itself
 stock-research screen --weekly --simulate --sort score
 
@@ -132,10 +156,12 @@ python -m stock_research.cli deepdive QQQ
 
 ## Dashboard (web UI)
 
-A Streamlit dashboard wraps every tool — screen, risk scan, deep dive, simulate,
-backtest, and the generative / cross-asset models — with the same engine the CLI
-uses, plus inline tables, charts (terminal-price histograms, calibration curves),
-and CSV download.
+A Streamlit dashboard wraps every tool across eight tabs — **OTM calls** (rich-vol
+gate + edge-weighted score), **Long calls** (vega-aware buy-side P&L), **Value buys**
+(value rank + a likely-price simulation for any name), risk scan, deep dive, simulate,
+backtest, and the generative / cross-asset models — with the same engine the CLI uses,
+plus inline tables, charts (terminal-price histograms, calibration curves), and CSV
+download.
 
 ```bash
 pip install -e ".[ui]"      # installs streamlit
@@ -267,6 +293,111 @@ has weekly options, sourced from Cboe's official
 > throttled by Yahoo). After that the cache makes it quick. Use `--max-tickers` /
 > `--throttle` on the first run if you hit rate limiting.
 
+## Value buys (`valuescan`)
+
+`valuescan` ranks the *underlyings* as long-equity **value buys** — a transparent,
+rules-based composite that scores each name cross-sectionally on **cheapness** (P/E,
+forward P/E, PEG, EV/EBITDA, P/B; lower = better), **quality** (ROE, profit margin),
+and **analyst upside**, blended into a `value_score` in [0, 1] (default weights
+50/30/20). A negative P/E is treated as missing, not "cheap".
+
+```bash
+stock-research valuescan --sort value_score          # watchlist
+stock-research valuescan --weeklys --max-tickers 200  # whole $1B+ universe
+```
+
+**Value picker.** Pass a market-cap **band** and hard parameter gates to hunt for
+specific setups (e.g. smaller, cheap, quality names): `--min-market-cap` /
+`--max-market-cap` plus `--max-pe`, `--max-forward-pe`, `--max-peg`, `--max-pb`,
+`--max-ev-ebitda`, `--min-roe`, `--min-margin`, `--min-upside`. Survivors are ranked
+by the composite. The watchlist/weeklys universes skew large-cap; add `--sec-universe`
+(broad SEC filer list, pair with `--max-tickers`/`--throttle`) to reach smaller names.
+
+> ⚠️ This uses **current** fundamentals, so it's valid for a *live* ranking (today's
+> data, today's decision) but is **not backtested or trained** — honestly validating
+> a value model needs point-in-time fundamentals (the planned next step). Treat it as
+> a disciplined screen, not alpha.
+
+## Long calls (`longcall`)
+
+Selling calls earns the volatility risk premium; **buying** them pays it, so a long
+call only makes sense with a directional view or genuinely cheap vol. `longcall`
+gives the honest odds: it simulates the joint **(price, volatility)** path with the
+GARCH stochastic-vol model and values the call along each path — terminal payoff if
+held to expiry, or Black–Scholes with the *simulated* vol for an earlier exit (so
+the P&L is **vega-aware**). Output: P(profit), P(2×), P(lose ≥90%), expected return,
+and a **cheap/rich** flag from the contract's IV vs realized vol.
+
+```bash
+stock-research longcall AAPL --expiry 2026-07-17 --strike 300         # hold to expiry
+stock-research longcall NVDA --expiry 2026-08-15 --strike 220 --hold 10  # exit in 10 days
+```
+
+> Data note: free sources have no *historical* implied vol, so the IV **level** is
+> anchored to the contract's IV observed *now* (today's IV/RV ratio) and evolves with
+> the simulated vol process — an explicit calibration, not an IV forecast. To unlock
+> a true IV-path model later, `log-chains` appends a daily option-chain snapshot to
+> `data/chains/` so per-name IV history accumulates — run it on a schedule.
+
+## Data foundations (scheduled collection)
+
+Two pieces accumulate the point-in-time data that free APIs don't provide, so that
+*trained* models (a value model, a true IV-path model) can be built without
+look-ahead later:
+
+- **`fetch-fundamentals`** — pulls SEC EDGAR XBRL `companyfacts` (revenue, net income,
+  assets, equity, EPS, …), each value tagged with the date it was **filed**, into
+  `data/edgar/`. That filing date is what makes it point-in-time. Set
+  `SEC_USER_AGENT="Your Name you@email"` (SEC requires a contact); responses are cached.
+- **`log-chains`** — appends a daily option-chain snapshot (with implied vol) to
+  `data/chains/`, building per-name IV history over time. Schedule it to run daily
+  after the close. A ready-made launcher is in [scripts/log_chains.bat](scripts/log_chains.bat);
+  on Windows register it with Task Scheduler, e.g.:
+
+  ```powershell
+  $a = New-ScheduledTaskAction -Execute "<repo>\scripts\log_chains.bat"
+  $t = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Mon,Tue,Wed,Thu,Fri -At 4:15PM
+  Register-ScheduledTask -TaskName "stock_research-log-chains" -Action $a -Trigger $t -Force
+  ```
+
+- **`build-panel`** — assembles the **as-of feature panel**: one row per (ticker,
+  rebalance date) where every feature uses only data available then — fundamentals
+  filed by that date (TTM / latest), prices up to it, and macro as-of — plus a
+  forward-return label. Features span valuation yields (earnings/book/sales/cash-flow),
+  quality (ROE, margin, asset turnover), YoY growth, 12-1 momentum, 3-month realized
+  vol, size, and the rate environment. Writes `data/panel/panel_*.csv`.
+
+  ```bash
+  SEC_USER_AGENT="Your Name you@email" stock-research build-panel AAPL MSFT XOM --start 2020-01-01
+  ```
+
+## Value model (`train-value`)
+
+`train-value` trains a **LightGBM cross-sectional forward-return ranker** on the
+panel and validates it **walk-forward with purging** — for each rebalance date it
+trains only on rows whose forward-return window ended before that date, so no
+overlapping label can leak. Name-specific features are percentile-ranked within
+each date (relative cheapness/quality, robust to regime drift); macro is left raw.
+
+```bash
+pip install -e ".[value]"     # lightgbm + scikit-learn
+SEC_USER_AGENT="Your Name you@email" stock-research train-value \
+    AAPL MSFT NVDA JPM XOM KO PG JNJ ... --start 2016-01-01 --horizon-days 126
+```
+
+It reports **rank IC** (Spearman of prediction vs realized return per date) with its
+t-stat, the top-minus-bottom quantile spread, and a single-factor **baseline** —
+because the model has to beat just buying cheap, not just beat zero.
+
+> 📊 **First validated result** (30 large-caps, 2016–2025, 36 dates, 6-mo horizon):
+> rank IC **+0.068**, hit-rate 67%, **t-stat +1.55**, quantile spread +1.2%/6mo;
+> the earnings-yield baseline was **dead (IC ~0)** over this period (value's lost
+> decade), so the model's edge came from combining quality/growth/momentum. Honest
+> read: a **promising but not yet statistically significant** signal (t < 2 on a
+> small sample), and — importantly — the 30 names are *today's* large-caps, so the
+> result carries **survivorship bias**. A trustworthy verdict needs a point-in-time
+> universe and more breadth. Treat it as a hypothesis, not an edge.
+
 ## Validation (`backtest`)
 
 Before trusting a forecast, check it out-of-sample. `backtest` walks the model
@@ -364,13 +495,20 @@ src/stock_research/
   metrics.py        # per-contract stat computation
   screener.py       # universe scan -> ranked CSV (option contracts)
   riskscan.py       # universe scan -> ranked CSV (underlyings, by simulated risk/return)
+  valuescan.py      # universe scan -> ranked CSV (underlyings, by value/quality composite)
+  longcall.py       # vega-aware P&L distribution of BUYING a call (GARCH stochastic vol)
+  chainlog.py       # daily option-chain snapshot logger -> data/chains/ (builds IV history)
+  edgar.py          # SEC EDGAR point-in-time fundamentals fetch/parse -> data/edgar/
+  fred.py           # FRED macro series (rates) with as-of lookup -> data/fred/
+  panel.py          # as-of feature panel (EDGAR + prices + FRED) -> data/panel/
+  valuemodel.py     # LightGBM cross-sectional value ranker + purged walk-forward IC
   deepdive.py       # single-ticker grid + charts
   simulate.py       # Monte-Carlo touch/terminal probabilities, VaR/CVaR, drawdown (GPU/CPU)
   expected_return.py# valuation-conditioned drift (Grinold-Kroner / analyst) for the sim
   backtest.py       # walk-forward calibration / VaR-coverage / pinball validation
   generative.py     # autoregressive TCN generative path model (PyTorch, GPU)
   joint.py          # cross-asset dynamic factor model: joint/portfolio tail risk
-  cli.py            # screen / riskscan / deepdive / simulate / backtest / generate
+  cli.py            # screen / valuescan / longcall / log-chains / riskscan / deepdive / ...
 app.py              # Streamlit dashboard wrapping every tool (streamlit run app.py)
 config/             # universe.yaml, settings.yaml
 tests/              # unit tests for the math

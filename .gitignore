@@ -17,6 +17,9 @@ output/
 # Cached market caps (regenerated at runtime)
 cache/
 
+# Fetched/generated data (option-chain logs, SEC EDGAR facts, etc.)
+data/
+
 # OS / editor
 .DS_Store
 .idea/

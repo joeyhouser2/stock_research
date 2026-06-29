@@ -15,7 +15,7 @@ from .config import REPO_ROOT, Settings
 # Stable column order for the output CSV.
 COLUMNS = [
     "ticker", "quote_type", "size_b", "expiry", "exp_type", "dte", "strike", "spot",
-    "pct_otm", "mid", "annual_yield", "score", "if_called_yield", "prob_otm", "delta",
+    "pct_otm", "mid", "annual_yield", "score", "score_adj", "if_called_yield", "prob_otm", "delta",
     "downside_cushion", "breakeven", "iv", "hv", "iv_hv",
     "open_interest", "volume", "spread_pct", "contract",
 ]
@@ -25,7 +25,8 @@ SIM_COLUMNS = ["sim_otm", "sim_touch"]
 SIM_LOOKBACK = 504
 
 # Columns the screener can rank by (descending).
-SORT_KEYS = ("annual_yield", "score", "if_called_yield", "prob_otm", "downside_cushion")
+SORT_KEYS = ("annual_yield", "score", "score_adj", "if_called_yield", "prob_otm",
+             "downside_cushion")
 
 
 # Map each value-filter setting to the fundamentals column it caps.
@@ -135,6 +136,12 @@ def analyze_ticker(
                 continue
             if settings.min_prob_otm is not None and (
                 stat["prob_otm"] is None or stat["prob_otm"] < settings.min_prob_otm
+            ):
+                continue
+            # Rich-vol gate: only sell where IV is rich vs realized. A missing
+            # IV/HV fails the gate (we won't pass through what we can't measure).
+            if settings.min_iv_hv is not None and (
+                stat["iv_hv"] is None or stat["iv_hv"] < settings.min_iv_hv
             ):
                 continue
             if not metrics.passes_liquidity(

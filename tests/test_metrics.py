@@ -91,6 +91,31 @@ def test_compute_full_row():
     assert stat["score"] < stat["annual_yield"]
 
 
+def test_score_adj_weights_by_iv_hv():
+    # IV (0.30) rich vs HV (0.25) -> iv_hv 1.2 -> score_adj = score * 1.2 > score.
+    row = pd.Series({
+        "contractSymbol": "RICH", "strike": 110, "bid": 2.0, "ask": 2.2,
+        "lastPrice": 2.1, "impliedVolatility": 0.30, "openInterest": 500, "volume": 40,
+    })
+    stat = metrics.compute(row=row, spot=100, dte=30, risk_free_rate=0.04, hv=0.25)
+    assert stat["iv_hv"] == pytest.approx(1.2, abs=0.01)
+    assert stat["score_adj"] == pytest.approx(stat["score"] * 1.2, abs=1e-4)
+    assert stat["score_adj"] > stat["score"]
+
+    # IV cheap vs HV -> score_adj penalized below score.
+    cheap = metrics.compute(row=row, spot=100, dte=30, risk_free_rate=0.04, hv=0.40)
+    assert cheap["score_adj"] < cheap["score"]
+
+
+def test_score_adj_none_without_iv():
+    row = pd.Series({
+        "contractSymbol": "NOIV", "strike": 110, "bid": 2.0, "ask": 2.2,
+        "lastPrice": 2.1, "impliedVolatility": 0.0, "openInterest": 500, "volume": 40,
+    })
+    stat = metrics.compute(row=row, spot=100, dte=30, risk_free_rate=0.04, hv=0.25)
+    assert stat["score_adj"] is None
+
+
 def test_score_is_none_without_iv():
     row = pd.Series({
         "contractSymbol": "NOIV", "strike": 110, "bid": 2.0, "ask": 2.2,

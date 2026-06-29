@@ -22,7 +22,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from stock_research import config, deepdive, riskscan, screener, simulate
+from stock_research import (config, deepdive, longcall, riskscan, screener, simulate,
+                            valuescan)
 from stock_research.config import load_universe
 
 st.set_page_config(page_title="stock_research", layout="wide")
@@ -35,10 +36,13 @@ def parse_tickers(raw: str) -> list[str]:
     return [t.strip().upper() for t in re.split(r"[,\s]+", raw or "") if t.strip()]
 
 
-def universe_input(default: str = "AAPL MSFT NVDA AMZN GOOGL"):
-    """Ticker box + 'use universe.yaml' toggle. Returns (tickers, use_universe)."""
-    use_uni = st.checkbox("Use config/universe.yaml", value=False)
-    raw = st.text_input("Tickers", value=default, disabled=use_uni)
+def universe_input(key: str, default: str = "AAPL MSFT NVDA AMZN GOOGL"):
+    """Ticker box + 'use universe.yaml' toggle. Returns (tickers, use_universe).
+
+    ``key`` namespaces the widgets so the same helper can appear on several tabs.
+    """
+    use_uni = st.checkbox("Use config/universe.yaml", value=False, key=f"{key}_useuni")
+    raw = st.text_input("Tickers", value=default, disabled=use_uni, key=f"{key}_tickers")
     if use_uni:
         try:
             return load_universe(), True
@@ -50,7 +54,8 @@ def universe_input(default: str = "AAPL MSFT NVDA AMZN GOOGL"):
 def download_df(df: pd.DataFrame, name: str):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
-    st.download_button("Download CSV", buf.getvalue(), file_name=name, mime="text/csv")
+    st.download_button("Download CSV", buf.getvalue(), file_name=name, mime="text/csv",
+                       key=f"dl_{name}")
 
 
 def sidebar_settings() -> config.Settings:
@@ -103,14 +108,21 @@ def reliability_chart(rel, title: str):
 # Tabs.
 # --------------------------------------------------------------------------- #
 def tab_screen(settings):
-    st.subheader("Screen — rank OTM call sales across the universe")
-    tickers, use_uni = universe_input()
-    c1, c2, c3, c4 = st.columns(4)
-    sort_by = c1.selectbox("Sort by", screener.SORT_KEYS)
-    expiry = c2.selectbox("Expiries", ["any", "weekly", "monthly"])
-    with_value = c3.checkbox("Value metrics", value=False)
-    sim_risk = c4.checkbox("Add sim columns", value=False)
-    s = config.override(settings, expiry_type=expiry)
+    st.subheader("OTM call writing — rank tradable out-of-the-money call sales")
+    tickers, use_uni = universe_input("screen")
+    c1, c2, c3 = st.columns(3)
+    sort_by = c1.selectbox("Sort by", screener.SORT_KEYS, key="screen_sort",
+                           help="score = yield × P(OTM); score_adj also weights by IV/HV (rich vol).")
+    expiry = c2.selectbox("Expiries", ["any", "weekly", "monthly"], key="screen_exp")
+    min_iv_hv = c3.number_input("Min IV/HV (rich-vol gate, 0 = off)", 0.0, 3.0, 0.0, 0.1,
+                                key="screen_ivhv",
+                                help="Keep only contracts where IV ≥ this × realized vol. "
+                                     "Pair with sort=score_adj for best bang-for-buck.")
+    c4, c5 = st.columns(2)
+    with_value = c4.checkbox("Value metrics", value=False, key="screen_value")
+    sim_risk = c5.checkbox("Add sim columns (fat-tailed)", value=False, key="screen_simcol")
+    s = config.override(settings, expiry_type=expiry,
+                        min_iv_hv=(min_iv_hv if min_iv_hv > 0 else None))
 
     if st.button("Run screen", type="primary"):
         with st.spinner(f"Screening {len(tickers)} tickers..."):
@@ -126,13 +138,13 @@ def tab_screen(settings):
 
 def tab_riskscan(settings):
     st.subheader("Risk scan — rank underlyings by simulated risk/return")
-    tickers, _ = universe_input()
+    tickers, _ = universe_input("riskscan")
     c1, c2, c3, c4 = st.columns(4)
-    horizon = c1.number_input("Horizon (days)", 5, 365, int(settings.max_dte))
-    target_pct = c2.number_input("Touch band ±", 0.01, 0.5, 0.05, 0.01, format="%.2f")
-    model = c3.selectbox("Path model", ["garch", "t", "bootstrap", "gbm"])
-    sort_by = c4.selectbox("Sort by", riskscan.SORT_KEYS)
-    paths = st.slider("Monte-Carlo paths", 5_000, 100_000, 30_000, 5_000)
+    horizon = c1.number_input("Horizon (days)", 5, 365, int(settings.max_dte), key="rs_h")
+    target_pct = c2.number_input("Touch band ±", 0.01, 0.5, 0.05, 0.01, format="%.2f", key="rs_band")
+    model = c3.selectbox("Path model", ["garch", "t", "bootstrap", "gbm"], key="rs_model")
+    sort_by = c4.selectbox("Sort by", riskscan.SORT_KEYS, key="rs_sort")
+    paths = st.slider("Monte-Carlo paths", 5_000, 100_000, 30_000, 5_000, key="rs_paths")
 
     if st.button("Run risk scan", type="primary"):
         with st.spinner(f"Simulating {len(tickers)} names..."):
@@ -148,10 +160,10 @@ def tab_riskscan(settings):
 def tab_deepdive(settings):
     st.subheader("Deep dive — full OTM-call grid for one ticker")
     c1, c2, c3, c4 = st.columns(4)
-    ticker = c1.text_input("Ticker", value="MSFT")
+    ticker = c1.text_input("Ticker", value="MSFT", key="dd_tk")
     expiry = c2.selectbox("Expiries", ["any", "weekly", "monthly"], key="dd_exp")
-    sim_risk = c3.checkbox("Sim columns", value=True)
-    with_value = c4.checkbox("Value metrics", value=True)
+    sim_risk = c3.checkbox("Sim columns", value=True, key="dd_sim")
+    with_value = c4.checkbox("Value metrics", value=True, key="dd_value")
     s = config.override(settings, expiry_type=expiry)
 
     if st.button("Run deep dive", type="primary"):
@@ -185,13 +197,126 @@ def tab_deepdive(settings):
         st.pyplot(fig)
 
 
+def tab_value(settings):
+    st.subheader("Value buys — rules-based value/quality rank + likely prices")
+    st.caption("Uses current fundamentals: a live ranking lens, not a backtested model. "
+               "Long-equity value/quality screen.")
+    tickers, _ = universe_input(
+        "value", default="AAPL MSFT NVDA AMZN GOOGL META JPM XOM KO JNJ PG WMT")
+    c1, c2, c3 = st.columns(3)
+    sort_by = c1.selectbox("Sort by", valuescan.SORT_KEYS, key="val_sort")
+    min_cap = c2.number_input("Min cap ($B)", 0.0, 5000.0, 1.0, 0.5, key="val_mincap")
+    max_cap = c3.number_input("Max cap ($B, 0 = none)", 0.0, 5000.0, 0.0, 1.0, key="val_maxcap",
+                              help="Value-picker ceiling — find smaller names below this size.")
+    f1, f2, f3, f4 = st.columns(4)
+    max_pe = f1.number_input("Max P/E (0=off)", 0.0, 200.0, 0.0, 1.0, key="val_maxpe")
+    max_peg = f2.number_input("Max PEG (0=off)", 0.0, 20.0, 0.0, 0.1, key="val_maxpeg")
+    min_roe = f3.number_input("Min ROE (0=off)", 0.0, 2.0, 0.0, 0.05, key="val_minroe")
+    min_upside = f4.number_input("Min upside (0=off)", 0.0, 2.0, 0.0, 0.05, key="val_minups")
+
+    if st.button("Run value scan", type="primary"):
+        s = config.override(settings, min_market_cap=min_cap * 1e9,
+                            max_market_cap=(max_cap * 1e9 if max_cap > 0 else None))
+        filters = {k: v for k, v in {"max_pe": max_pe or None, "max_peg": max_peg or None,
+                                     "min_roe": min_roe or None, "min_upside": min_upside or None}.items()
+                   if v is not None}
+        with st.spinner(f"Ranking {len(tickers)} names..."):
+            st.session_state["value"] = valuescan.run(tickers, s, sort_by=sort_by,
+                                                      filters=filters, verbose=False)
+    df = st.session_state.get("value")
+    if df is None or df.empty:
+        return
+    st.caption(f"{len(df)} ranked names — value_score blends cheapness (50%), quality (30%), "
+               "analyst upside (20%)")
+    st.dataframe(df, use_container_width=True, height=420)
+    download_df(df, "value.csv")
+
+    st.markdown("### Likely price distribution")
+    c1, c2, c3 = st.columns(3)
+    pick = c1.selectbox("Simulate a name", df["ticker"].tolist(), key="val_pick")
+    horizon = c2.number_input("Horizon (days)", 5, 365, 90, key="val_h")
+    paths = c3.slider("Paths", 10_000, 200_000, 50_000, 10_000, key="val_paths")
+    if st.button("Simulate price", key="val_sim_btn"):
+        with st.spinner(f"Simulating {pick}..."):
+            try:
+                st.session_state["value_sim"] = simulate.run(
+                    pick, settings, horizon_days=int(horizon), n_paths=paths)
+            except ValueError as exc:
+                st.session_state["value_sim"] = None
+                st.error(str(exc))
+    out = st.session_state.get("value_sim")
+    if out:
+        sim, report = out
+        d = report.get("drift")
+        st.markdown(f"**{report['ticker']}** spot ${sim.spot:.2f} — {sim.model}, "
+                    f"vol {sim.sigma:.1%}/yr, {sim.horizon_days}d")
+        if d is not None:
+            st.caption(f"drift: {d.summary()}")
+        q = sim.terminal_quantiles()
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Expected", f"${sim.expected_terminal():.2f}")
+        m2.metric("Median", f"${q[0.5]:.2f}")
+        m3.metric("p05 – p95", f"${q[0.05]:.0f}–${q[0.95]:.0f}")
+        m4.metric("VaR 95%", f"{sim.var(0.95):.1%}")
+        fig, ax = plt.subplots(figsize=(7, 3.5))
+        ax.hist(sim.terminal, bins=80, color="#8172b3", alpha=0.85)
+        ax.axvline(sim.spot, color="black", linestyle="--", label="spot")
+        ax.set_xlabel("Terminal price"); ax.set_ylabel("paths"); ax.legend()
+        st.pyplot(fig)
+
+
+def tab_longcall(settings):
+    st.subheader("Long calls — P&L of BUYING a call (vega-aware)")
+    st.caption("Buying pays the volatility premium, so this gives the honest odds. "
+               "Find the expiry/strike on the Deep dive or OTM tab first.")
+    c1, c2, c3, c4 = st.columns(4)
+    ticker = c1.text_input("Ticker", "AAPL", key="lc_tk")
+    expiry = c2.text_input("Expiry (YYYY-MM-DD)", "", key="lc_exp")
+    strike = c3.number_input("Strike", 0.0, 100_000.0, 0.0, key="lc_strike")
+    hold = c4.number_input("Hold days (0 = to expiry)", 0, 365, 0, key="lc_hold")
+    paths = st.slider("Paths", 10_000, 200_000, 50_000, 10_000, key="lc_paths")
+
+    if st.button("Simulate long call", type="primary", key="lc_run"):
+        if not expiry or strike <= 0:
+            st.error("Enter an expiry date and a strike.")
+        else:
+            with st.spinner(f"Simulating buying {ticker} {strike:g} {expiry}..."):
+                try:
+                    st.session_state["longcall"] = longcall.run(
+                        ticker.upper(), settings, expiry=expiry, strike=strike,
+                        hold_days=(hold or None), n_paths=paths)
+                except ValueError as exc:
+                    st.session_state["longcall"] = None
+                    st.error(str(exc))
+    out = st.session_state.get("longcall")
+    if not out:
+        return
+    res, report = out
+    flag = "CHEAP" if res.iv_rv < 0.95 else "RICH" if res.iv_rv > 1.05 else "fair"
+    st.markdown(f"**{report['ticker']} {res.strike:g} call exp {report['expiry']}** — "
+                f"spot ${res.spot:.2f}, premium ${res.premium:.2f}, "
+                f"breakeven ${res.breakeven_spot:.2f}")
+    st.caption(f"IV {res.iv0:.1%} vs realized {res.rv0:.1%} → IV/RV {res.iv_rv:.2f} "
+               f"[{flag}] · hold {res.hold_days}d of {res.dte}d · {res.backend}")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("P(profit)", f"{res.prob_profit():.1%}")
+    m2.metric("P(2×)", f"{res.prob_multiple(2):.1%}")
+    m3.metric("P(lose ≥90%)", f"{res.prob_total_loss():.1%}")
+    m4.metric("Expected return", f"{res.expected_return():+.1%}")
+    fig, ax = plt.subplots(figsize=(7, 3.5))
+    ax.hist(res.call_value, bins=80, color="#c44e52", alpha=0.85)
+    ax.axvline(res.premium, color="black", linestyle="--", label=f"premium ${res.premium:.2f}")
+    ax.set_xlabel("Exit value of the call"); ax.set_ylabel("paths"); ax.legend()
+    st.pyplot(fig)
+
+
 def tab_simulate(settings):
     st.subheader("Simulate — touch / terminal probabilities, VaR, drawdown")
     c1, c2, c3 = st.columns(3)
     ticker = c1.text_input("Ticker", value="NVDA", key="sim_tk")
     horizon = c2.number_input("Horizon (days)", 5, 365, 45, key="sim_h")
     model = c3.selectbox("Path model", ["garch", "t", "bootstrap", "gbm"], key="sim_model")
-    band = st.text_input("Target moves (±, comma-separated)", value="0.10, -0.10")
+    band = st.text_input("Target moves (±, comma-separated)", value="0.10, -0.10", key="sim_band")
     paths = st.slider("Paths", 10_000, 500_000, 100_000, 10_000, key="sim_paths")
     pcts = [float(x) for x in re.split(r"[,\s]+", band) if x.strip()]
 
@@ -230,11 +355,11 @@ def tab_backtest(settings):
     st.subheader("Backtest — walk-forward calibration of the forecasts")
     st.caption("No look-ahead. Validates the price model (drift held flat).")
     c1, c2, c3 = st.columns(3)
-    tickers = parse_tickers(c1.text_input("Tickers (pooled)", value="SPY AAPL MSFT XOM"))
+    tickers = parse_tickers(c1.text_input("Tickers (pooled)", value="SPY AAPL MSFT XOM", key="bt_tks"))
     horizon = c2.number_input("Horizon (days)", 5, 120, 30, key="bt_h")
     model = c3.selectbox("Model", ["garch", "t", "bootstrap", "gbm"], key="bt_model")
     c4, c5 = st.columns(2)
-    history = c4.number_input("History (days)", 600, 6000, 1825, 100)
+    history = c4.number_input("History (days)", 600, 6000, 1825, 100, key="bt_hist")
     paths = c5.slider("Paths/window", 5_000, 50_000, 20_000, 5_000, key="bt_paths")
 
     if st.button("Run backtest", type="primary"):
@@ -274,8 +399,8 @@ def tab_generate(settings):
     st.caption(_gpu_status())
     mode = st.radio("Mode", ["Single-ticker simulate", "Single vs GARCH (compare)",
                              "Pooled universe vs GARCH", "Cross-asset joint (portfolio)"],
-                    horizontal=False)
-    steps = st.slider("Training steps", 300, 5000, 1500, 100)
+                    horizontal=False, key="gen_mode")
+    steps = st.slider("Training steps", 300, 5000, 1500, 100, key="gen_steps")
     paths = st.slider("Paths", 5_000, 50_000, 20_000, 5_000, key="gen_paths")
 
     if mode == "Single-ticker simulate":
@@ -392,18 +517,23 @@ def main():
     settings = sidebar_settings()
     st.sidebar.caption(_gpu_status())
 
-    tabs = st.tabs(["Screen", "Risk scan", "Deep dive", "Simulate", "Backtest", "Generative"])
+    tabs = st.tabs(["OTM calls", "Long calls", "Value buys", "Risk scan", "Deep dive",
+                    "Simulate", "Backtest", "Generative"])
     with tabs[0]:
         tab_screen(settings)
     with tabs[1]:
-        tab_riskscan(settings)
+        tab_longcall(settings)
     with tabs[2]:
-        tab_deepdive(settings)
+        tab_value(settings)
     with tabs[3]:
-        tab_simulate(settings)
+        tab_riskscan(settings)
     with tabs[4]:
-        tab_backtest(settings)
+        tab_deepdive(settings)
     with tabs[5]:
+        tab_simulate(settings)
+    with tabs[6]:
+        tab_backtest(settings)
+    with tabs[7]:
         tab_generate(settings)
 
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import pandas as pd
 
-from . import backtest, deepdive, riskscan, screener, simulate
+from . import backtest, chainlog, deepdive, longcall, riskscan, screener, simulate, valuescan
 from .config import load_settings, load_universe, override
 
 
@@ -69,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--min-prob-otm", type=float,
                     help="Only contracts with at least this probability of expiring OTM "
                          "(0.70 = 70%%), to cap assignment risk.")
+    sc.add_argument("--min-iv-hv", type=float,
+                    help="Rich-vol gate: only contracts with IV/HV at or above this "
+                         "(e.g. 1.2). Pair with --sort score_adj for best bang-for-buck.")
     sc.add_argument("--tickers", nargs="+", help="Override the universe with these tickers.")
     sc.add_argument("--weeklys", action="store_true",
                     help="Screen the full Cboe weeklys universe (every symbol with weekly "
@@ -182,6 +186,36 @@ def build_parser() -> argparse.ArgumentParser:
     gn.add_argument("--cpu", action="store_true", help="Force CPU even if a GPU is available.")
     gn.add_argument("--quiet", action="store_true", help="Suppress training progress.")
 
+    vs = sub.add_parser("valuescan",
+                        help="Rank the universe by a rules-based value/quality score.")
+    vs.add_argument("--min-market-cap", type=float, help="Minimum market cap in USD.")
+    vs.add_argument("--max-market-cap", type=float,
+                    help="Maximum market cap in USD — the value-picker ceiling (find smaller names).")
+    vs.add_argument("--max-pe", type=float, help="Keep only trailing P/E <= this.")
+    vs.add_argument("--max-forward-pe", type=float, help="Keep only forward P/E <= this.")
+    vs.add_argument("--max-peg", type=float, help="Keep only PEG <= this.")
+    vs.add_argument("--max-pb", type=float, help="Keep only price/book <= this.")
+    vs.add_argument("--max-ev-ebitda", type=float, help="Keep only EV/EBITDA <= this.")
+    vs.add_argument("--min-roe", type=float, help="Keep only ROE >= this (e.g. 0.12).")
+    vs.add_argument("--min-margin", type=float, help="Keep only profit margin >= this.")
+    vs.add_argument("--min-upside", type=float, help="Keep only analyst upside >= this.")
+    vs.add_argument("--sort", choices=valuescan.SORT_KEYS, default="value_score",
+                    help="Rank by this column, descending (default: value_score).")
+    vs.add_argument("--tickers", nargs="+", help="Override the universe with these tickers.")
+    vs.add_argument("--weeklys", action="store_true",
+                    help="Scan the full Cboe weeklys universe instead of config/universe.yaml.")
+    vs.add_argument("--sec-universe", action="store_true",
+                    help="Use the broad SEC filer list as candidates (reaches small-caps). "
+                         "Slow — pair with --max-tickers and --throttle.")
+    vs.add_argument("--refresh-weeklys", action="store_true",
+                    help="Re-download the Cboe weeklys list before scanning (implies --weeklys).")
+    vs.add_argument("--max-tickers", type=int, help="With --weeklys, cap at the N largest names.")
+    vs.add_argument("--cache-ttl-days", type=float, default=7,
+                    help="How long cached market caps stay fresh (default: 7 days).")
+    vs.add_argument("--throttle", type=float, default=0.0,
+                    help="Seconds to pause between names, to ease Yahoo rate limits.")
+    vs.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
     bt = sub.add_parser("backtest",
                         help="Walk-forward calibration of the simulation's forecasts.")
     bt.add_argument("tickers", nargs="+", help="Ticker(s); records are pooled.")
@@ -207,6 +241,57 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--seed", type=int, default=12345, help="RNG seed.")
     bt.add_argument("--cpu", action="store_true", help="Force CPU even if a GPU is available.")
     bt.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
+    lc = sub.add_parser("longcall",
+                        help="P&L distribution of BUYING a call (vega-aware simulation).")
+    lc.add_argument("ticker", help="Ticker symbol, e.g. AAPL.")
+    lc.add_argument("--expiry", required=True, help="Expiry date, YYYY-MM-DD.")
+    lc.add_argument("--strike", type=float, required=True, help="Strike price.")
+    lc.add_argument("--hold", type=int, dest="hold_days",
+                    help="Trading days held before exit (default: hold to expiry).")
+    lc.add_argument("--risk-free-rate", type=float, help="Annual risk-free rate (e.g. 0.04).")
+    lc.add_argument("--paths", type=int, default=50_000, help="Monte-Carlo paths (default: 50k).")
+    lc.add_argument("--seed", type=int, default=0, help="RNG seed.")
+    lc.add_argument("--cpu", action="store_true", help="Force CPU even if a GPU is available.")
+
+    ff = sub.add_parser("fetch-fundamentals",
+                        help="Download SEC EDGAR point-in-time fundamentals to data/edgar/.")
+    ff.add_argument("tickers", nargs="+", help="Ticker(s), e.g. AAPL MSFT.")
+    ff.add_argument("--save", action="store_true",
+                    help="Also write a tidy fundamentals_<TICKER>.csv per name.")
+    ff.add_argument("--refresh", action="store_true", help="Re-download even if cached.")
+    ff.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
+    bp = sub.add_parser("build-panel",
+                        help="Build the as-of value-model feature panel (EDGAR + prices + FRED).")
+    bp.add_argument("tickers", nargs="+", help="Ticker(s) to include.")
+    bp.add_argument("--start", help="Panel start date YYYY-MM-DD (default: 5 years ago).")
+    bp.add_argument("--end", help="Panel end date YYYY-MM-DD (default: today).")
+    bp.add_argument("--freq-months", type=int, default=3,
+                    help="Months between rebalance dates (default: 3).")
+    bp.add_argument("--horizon-days", type=int, default=126,
+                    help="Forward-return label horizon in calendar days (default: 126 ~6mo).")
+    bp.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
+    tv = sub.add_parser("train-value",
+                        help="Train + walk-forward-validate the cross-sectional value model.")
+    tv.add_argument("tickers", nargs="*", help="Tickers to build a panel from (if no --panel).")
+    tv.add_argument("--panel", help="Path to a prebuilt panel CSV (else build from tickers).")
+    tv.add_argument("--start", help="Panel start YYYY-MM-DD (default: 5 years ago).")
+    tv.add_argument("--end", help="Panel end YYYY-MM-DD (default: today).")
+    tv.add_argument("--freq-months", type=int, default=3, help="Months between rebalances.")
+    tv.add_argument("--horizon-days", type=int, default=126,
+                    help="Forward-return horizon in calendar days (default: 126 ~6mo).")
+    tv.add_argument("--quiet", action="store_true", help="Suppress progress.")
+
+    lg = sub.add_parser("log-chains",
+                        help="Append a daily option-chain snapshot (builds IV history).")
+    lg.add_argument("--tickers", nargs="+", help="Tickers to log (default: universe.yaml).")
+    lg.add_argument("--min-dte", type=int, default=1, help="Min DTE to log (default: 1).")
+    lg.add_argument("--max-dte", type=int, default=120, help="Max DTE to log (default: 120).")
+    lg.add_argument("--throttle", type=float, default=0.0,
+                    help="Seconds between tickers, to ease Yahoo rate limits.")
+    lg.add_argument("--quiet", action="store_true", help="Only print the final count.")
 
     dd = sub.add_parser("deepdive", help="Full OTM-call stat grid for one ticker.")
     dd.add_argument("ticker", help="Ticker symbol, e.g. MSFT.")
@@ -243,6 +328,7 @@ def _resolved_settings(args) -> "object":
         base,
         risk_free_rate=getattr(args, "risk_free_rate", None),
         min_market_cap=getattr(args, "min_market_cap", None),
+        max_market_cap=getattr(args, "max_market_cap", None),
         min_dte=min_dte,
         max_dte=max_dte,
         expiry_type=expiry_type,
@@ -257,6 +343,7 @@ def _resolved_settings(args) -> "object":
         max_forward_pe=getattr(args, "max_forward_pe", None),
         max_peg=getattr(args, "max_peg", None),
         min_prob_otm=getattr(args, "min_prob_otm", None),
+        min_iv_hv=getattr(args, "min_iv_hv", None),
         drift_model=getattr(args, "drift_model", None),
         equity_risk_premium=getattr(args, "equity_risk_premium", None),
         pe_anchor=getattr(args, "pe_anchor", None),
@@ -293,6 +380,8 @@ _SCREEN_COLUMNS = [
     ("mid", "Mid", _money),
     ("annual_yield", "Ann.Yld", _pct),
     ("score", "Score", lambda v: _num(v, 2)),
+    ("score_adj", "Score+", lambda v: _num(v, 2)),
+    ("iv_hv", "IV/HV", lambda v: _num(v, 2)),
     ("prob_otm", "P(OTM)", _pct),
     ("sim_otm", "Sim(OTM)", _pct),
     ("sim_touch", "Sim(Touch)", _pct),
@@ -601,6 +690,72 @@ def _cmd_generate(args) -> int:
     return 0
 
 
+_VALUESCAN_COLUMNS = [
+    ("ticker", "Ticker", str),
+    ("price", "Price", _money),
+    ("trailing_pe", "P/E", lambda v: _num(v, 1)),
+    ("forward_pe", "Fwd P/E", lambda v: _num(v, 1)),
+    ("peg", "PEG", lambda v: _num(v, 2)),
+    ("price_to_book", "P/B", lambda v: _num(v, 1)),
+    ("roe", "ROE", _pct),
+    ("profit_margin", "Margin", _pct),
+    ("analyst_upside", "Upside", _pct),
+    ("value_score", "Value", lambda v: _num(v, 2)),
+]
+
+
+def _print_valuescan_table(df, n: int) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    cols = [c for c in _VALUESCAN_COLUMNS if c[0] in df.columns]
+    table = Table(title=f"Top {n} value/quality names", title_style="bold",
+                  header_style="bold cyan")
+    for i, (_, header, _fmt) in enumerate(cols):
+        table.add_column(header, justify="left" if i == 0 else "right", no_wrap=True)
+    for _, row in df.head(n).iterrows():
+        table.add_row(*(fmt(row[key]) if fmt is not str else str(row[key])
+                        for key, _header, fmt in cols))
+    Console().print(table)
+
+
+def _cmd_valuescan(args) -> int:
+    settings = _resolved_settings(args)
+    verbose = not args.quiet
+    filters = {k: getattr(args, k) for k in valuescan.VALUE_FILTERS
+               if getattr(args, k, None) is not None}
+
+    if args.sec_universe:
+        from . import edgar
+        if "SEC_USER_AGENT" not in os.environ:
+            print("Note: set SEC_USER_AGENT='Your Name your@email' for the SEC list.",
+                  file=sys.stderr)
+        syms = list(edgar.cik_map().keys())
+        if args.max_tickers:
+            syms = syms[:args.max_tickers]
+        tickers = syms
+        if verbose:
+            print(f"SEC universe: {len(tickers)} candidate filers (max-cap gate filters them).")
+    elif args.weeklys or args.refresh_weeklys:
+        tickers = screener.qualifying_universe(
+            settings, refresh_weeklys=args.refresh_weeklys, cache_ttl_days=args.cache_ttl_days,
+            throttle=args.throttle, max_tickers=args.max_tickers, verbose=verbose)
+    else:
+        tickers = [t.upper() for t in args.tickers] if args.tickers else load_universe()
+
+    if verbose:
+        band = f"${settings.min_market_cap/1e9:.1f}B"
+        band += f"–${settings.max_market_cap/1e9:.1f}B" if settings.max_market_cap else "+"
+        print(f"Scanning {len(tickers)} names (cap {band}"
+              f"{', ' + str(len(filters)) + ' filters' if filters else ''}), ranked by {args.sort}...")
+    df = valuescan.run(tickers, settings, sort_by=args.sort, filters=filters,
+                       throttle=args.throttle, verbose=verbose)
+    if df.empty:
+        return 1
+    _print_valuescan_table(df, min(len(df), 25))
+    return 0
+
+
 def _cmd_backtest(args) -> int:
     settings = _resolved_settings(args)
     horizon = args.horizon or settings.max_dte
@@ -616,6 +771,76 @@ def _cmd_backtest(args) -> int:
     print(backtest.render_text(scores, model=args.model, horizon_days=horizon,
                                target_pct=args.target_pct, mu=mu))
     return 0 if scores["n"] else 1
+
+
+def _cmd_longcall(args) -> int:
+    settings = _resolved_settings(args)
+    try:
+        result, report = longcall.run(
+            args.ticker.upper(), settings, expiry=args.expiry, strike=args.strike,
+            hold_days=args.hold_days, n_paths=args.paths, seed=args.seed, force_cpu=args.cpu)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(longcall.render_text(result, report))
+    return 0
+
+
+def _cmd_fetch_fundamentals(args) -> int:
+    from . import edgar
+    if "SEC_USER_AGENT" not in os.environ:
+        print("Note: set SEC_USER_AGENT='Your Name your@email' so SEC accepts the requests.",
+              file=sys.stderr)
+    frames = edgar.fetch([t.upper() for t in args.tickers], refresh=args.refresh,
+                         save=args.save, verbose=not args.quiet)
+    return 0 if frames else 1
+
+
+def _cmd_build_panel(args) -> int:
+    from . import panel
+    if "SEC_USER_AGENT" not in os.environ:
+        print("Note: set SEC_USER_AGENT='Your Name your@email' for the EDGAR pulls.",
+              file=sys.stderr)
+    df = panel.run([t.upper() for t in args.tickers], start=args.start, end=args.end,
+                   freq_months=args.freq_months, horizon_days=args.horizon_days,
+                   verbose=not args.quiet)
+    if df.empty:
+        return 1
+    pd.set_option("display.max_columns", None, "display.width", 220)
+    print("\nPanel sample:")
+    print(df.head(12).to_string(index=False))
+    return 0
+
+
+def _cmd_train_value(args) -> int:
+    from . import panel, valuemodel
+    if args.panel:
+        df = pd.read_csv(args.panel)
+    elif args.tickers:
+        if "SEC_USER_AGENT" not in os.environ:
+            print("Note: set SEC_USER_AGENT='Your Name your@email' for the EDGAR pulls.",
+                  file=sys.stderr)
+        df = panel.run([t.upper() for t in args.tickers], start=args.start, end=args.end,
+                       freq_months=args.freq_months, horizon_days=args.horizon_days,
+                       verbose=not args.quiet)
+    else:
+        print("Error: pass tickers to build a panel, or --panel <csv>.", file=sys.stderr)
+        return 1
+    if df.empty:
+        print("Error: empty panel.", file=sys.stderr)
+        return 1
+
+    preds = valuemodel.walk_forward(df, horizon_days=args.horizon_days, verbose=not args.quiet)
+    score = valuemodel.evaluate(preds)
+    print(valuemodel.render_text(score, horizon_days=args.horizon_days))
+    return 0
+
+
+def _cmd_log_chains(args) -> int:
+    tickers = [t.upper() for t in args.tickers] if args.tickers else load_universe()
+    chainlog.log_chains(tickers, min_dte=args.min_dte, max_dte=args.max_dte,
+                        throttle=args.throttle, verbose=not args.quiet)
+    return 0
 
 
 def _cmd_deepdive(args) -> int:
@@ -647,10 +872,22 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_simulate(args)
     if args.command == "riskscan":
         return _cmd_riskscan(args)
+    if args.command == "valuescan":
+        return _cmd_valuescan(args)
     if args.command == "backtest":
         return _cmd_backtest(args)
     if args.command == "generate":
         return _cmd_generate(args)
+    if args.command == "longcall":
+        return _cmd_longcall(args)
+    if args.command == "fetch-fundamentals":
+        return _cmd_fetch_fundamentals(args)
+    if args.command == "build-panel":
+        return _cmd_build_panel(args)
+    if args.command == "train-value":
+        return _cmd_train_value(args)
+    if args.command == "log-chains":
+        return _cmd_log_chains(args)
     if args.command == "deepdive":
         return _cmd_deepdive(args)
     return 2

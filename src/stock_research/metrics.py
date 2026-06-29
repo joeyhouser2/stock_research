@@ -12,6 +12,7 @@ import math
 from . import blackscholes as bs
 
 DAYS_PER_YEAR = 365.0
+IV_HV_CAP = 3.0          # cap the IV/HV multiplier in score_adj so one outlier can't dominate
 
 
 def mid_price(bid: float, ask: float, last: float) -> float | None:
@@ -84,6 +85,13 @@ def compute(
     annual_yield = annualize(static_return, dte)
     score = round(annual_yield * prob_otm, 4) if prob_otm is not None else None
 
+    # Edge-weighted "bang for buck": the risk-adjusted yield (score) scaled by how
+    # rich the option's vol is (IV/HV, capped). Rewards selling overpriced vol;
+    # iv_hv is treated as 1.0 (neutral) when IV or HV is missing.
+    iv_hv = iv / hv if (iv and hv) else None
+    score_adj = (round(score * min(iv_hv if iv_hv is not None else 1.0, IV_HV_CAP), 4)
+                 if score is not None else None)
+
     return {
         "contract": row.get("contractSymbol"),
         "strike": strike,
@@ -96,6 +104,7 @@ def compute(
         "static_yield": round(static_return, 4),
         "annual_yield": round(annual_yield, 4),
         "score": score,
+        "score_adj": score_adj,
         "if_called_yield": round(annualize(if_called_return, dte), 4),
         "prob_otm": round(prob_otm, 4) if prob_otm is not None else None,
         "delta": round(delta, 4) if delta is not None else None,
@@ -103,7 +112,7 @@ def compute(
         "breakeven": round(spot - premium, 4),
         "iv": round(iv, 4) if iv is not None else None,
         "hv": round(hv, 4) if hv is not None else None,
-        "iv_hv": round(iv / hv, 3) if iv and hv else None,
+        "iv_hv": round(iv_hv, 3) if iv_hv is not None else None,
         "open_interest": _int(row.get("openInterest")),
         "volume": _int(row.get("volume")),
         "spread_pct": _round(spread_pct(bid, ask), 4),
