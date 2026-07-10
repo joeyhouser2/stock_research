@@ -284,6 +284,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Forward-return horizon in calendar days (default: 126 ~6mo).")
     tv.add_argument("--quiet", action="store_true", help="Suppress progress.")
 
+    xf = sub.add_parser("extract-xbrl-fundamentals",
+                        help="Extract point-in-time BS/IS/CF fundamentals from the local XBRL "
+                             "Postgres DB built by the EDGAR-pipeline-share notebooks.")
+    xf.add_argument("--since", default=None,
+                    help="Only filings filed on/after this date, YYYY-MM-DD "
+                         "(default: 2019-01-01, the inline-XBRL cutover).")
+    xf.add_argument("--include-partial", action="store_true",
+                    help="Also include filings that loaded without a DocumentPeriodEndDate.")
+    xf.add_argument("--limit", type=int, help="Cap the number of filings extracted (for testing).")
+    xf.add_argument("--out", help="Output CSV path (default: data/xbrl_fundamentals/fundamentals_<since>.csv).")
+    xf.add_argument("--quiet", action="store_true", help="Suppress per-filing progress.")
+
     lg = sub.add_parser("log-chains",
                         help="Append a daily option-chain snapshot (builds IV history).")
     lg.add_argument("--tickers", nargs="+", help="Tickers to log (default: universe.yaml).")
@@ -355,19 +367,19 @@ def _resolved_settings(args) -> "object":
 # Curated columns for the terminal table: (df_column, header, formatter).
 # The full set still lands in the CSV; --full prints everything.
 def _pct(v, dp=1):
-    return "-" if v != v else f"{v * 100:.{dp}f}%"
+    return "-" if v is None or v != v else f"{v * 100:.{dp}f}%"
 
 
 def _money(v):
-    return "-" if v != v else f"{v:,.2f}"
+    return "-" if v is None or v != v else f"{v:,.2f}"
 
 
 def _num(v, dp=2):
-    return "-" if v != v else f"{v:.{dp}f}"
+    return "-" if v is None or v != v else f"{v:.{dp}f}"
 
 
 def _int(v):
-    return "-" if v != v else f"{int(v):,}"
+    return "-" if v is None or v != v else f"{int(v):,}"
 
 
 _SCREEN_COLUMNS = [
@@ -380,15 +392,14 @@ _SCREEN_COLUMNS = [
     ("mid", "Mid", _money),
     ("annual_yield", "Ann.Yld", _pct),
     ("score", "Score", lambda v: _num(v, 2)),
-    ("score_adj", "Score+", lambda v: _num(v, 2)),
-    ("iv_hv", "IV/HV", lambda v: _num(v, 2)),
     ("prob_otm", "P(OTM)", _pct),
     ("sim_otm", "Sim(OTM)", _pct),
     ("sim_touch", "Sim(Touch)", _pct),
     ("delta", "Delta", lambda v: _num(v, 2)),
     ("open_interest", "OI", _int),
-    ("spread_pct", "Spread", _pct),
 ]
+# Columns omitted from the default table for width (still in the CSV and --full):
+# score_adj (Score+), iv_hv (IV/HV), spread_pct (Spread).
 
 
 def _print_screen_table(df, n: int) -> None:
@@ -836,6 +847,21 @@ def _cmd_train_value(args) -> int:
     return 0
 
 
+def _cmd_extract_xbrl_fundamentals(args) -> int:
+    from . import edgar_xbrl
+    kwargs = {"include_partial": args.include_partial, "limit": args.limit,
+              "out_path": args.out, "verbose": not args.quiet}
+    if args.since:
+        kwargs["since"] = args.since
+    try:
+        df = edgar_xbrl.run(**kwargs)
+    except ModuleNotFoundError:
+        print("Note: install the 'xbrl' extra (pip install -e \".[xbrl]\") for psycopg2.",
+              file=sys.stderr)
+        return 1
+    return 0 if not df.empty else 1
+
+
 def _cmd_log_chains(args) -> int:
     tickers = [t.upper() for t in args.tickers] if args.tickers else load_universe()
     chainlog.log_chains(tickers, min_dte=args.min_dte, max_dte=args.max_dte,
@@ -886,6 +912,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_build_panel(args)
     if args.command == "train-value":
         return _cmd_train_value(args)
+    if args.command == "extract-xbrl-fundamentals":
+        return _cmd_extract_xbrl_fundamentals(args)
     if args.command == "log-chains":
         return _cmd_log_chains(args)
     if args.command == "deepdive":

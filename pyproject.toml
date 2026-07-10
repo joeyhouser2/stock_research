@@ -28,6 +28,9 @@ gpu = ["torch>=2.1"]
 ui = ["streamlit>=1.30"]
 # Cross-sectional value model (`train-value`): gradient-boosted trees.
 value = ["lightgbm>=4.0", "scikit-learn>=1.3"]
+# Local XBRL Postgres extraction (`extract-xbrl-fundamentals`): needs the DB
+# populated by the EDGAR-pipeline-share notebooks.
+xbrl = ["psycopg2-binary>=2.9"]
 
 [project.scripts]
 stock-research = "stock_research.cli:main"
