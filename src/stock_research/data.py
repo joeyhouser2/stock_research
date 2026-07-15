@@ -198,14 +198,22 @@ def list_expirations(ticker: str) -> list[str]:
         return []
 
 
-def get_call_chain(ticker: str, expiry: str) -> pd.DataFrame:
-    """Call side of the chain for one expiry. Empty DataFrame on failure."""
+def get_option_chain(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(calls, puts) for one expiry, in a single fetch. Empty DataFrames on failure."""
     try:
         chain = _retry(lambda: yf.Ticker(ticker).option_chain(expiry))
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     calls = getattr(chain, "calls", None)
-    return calls.copy() if calls is not None else pd.DataFrame()
+    puts = getattr(chain, "puts", None)
+    return (calls.copy() if calls is not None else pd.DataFrame(),
+            puts.copy() if puts is not None else pd.DataFrame())
+
+
+def get_call_chain(ticker: str, expiry: str) -> pd.DataFrame:
+    """Call side of the chain for one expiry. Empty DataFrame on failure."""
+    calls, _ = get_option_chain(ticker, expiry)
+    return calls
 
 
 def days_to_expiry(expiry: str, today: dt.date | None = None) -> int:

@@ -8,7 +8,7 @@ import sys
 
 import pandas as pd
 
-from . import backtest, chainlog, deepdive, longcall, riskscan, screener, simulate, valuescan
+from . import backtest, chainlog, deepdive, longcall, parity, riskscan, screener, simulate, valuescan
 from .config import load_settings, load_universe, override
 
 
@@ -318,6 +318,24 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Path model for --simulate (default: garch).")
     dd.add_argument("--sim-paths", type=int, default=50_000,
                     help="Monte-Carlo paths per expiry for --simulate (default: 50k).")
+
+    pp = sub.add_parser("parity", help="Put-call parity check: implied forward price "
+                                        "per expiry vs the textbook (rate/dividend) forward.")
+    pp.add_argument("ticker", help="Ticker symbol, e.g. QCOM.")
+    pp.add_argument("--risk-free-rate", type=float, help="Annual risk-free rate (e.g. 0.04).")
+    pp.add_argument("--min-dte", type=int, help="Minimum days to expiry.")
+    pp.add_argument("--max-dte", type=int, help="Maximum days to expiry.")
+    pp.add_argument("--min-otm", type=float,
+                    help="Only strikes at least this far from spot, as a fraction "
+                         "(0.02 = 2%%). Applied symmetrically to calls and puts.")
+    pp.add_argument("--max-otm", type=float,
+                    help="Only strikes within this far from spot, as a fraction (0.15 = 15%%).")
+    pexp = pp.add_mutually_exclusive_group()
+    pexp.add_argument("--weekly", action="store_true",
+                      help="Only weekly (non-3rd-Friday) expirations; defaults DTE to 1-14 "
+                           "if you don't set --min-dte/--max-dte.")
+    pexp.add_argument("--monthly", action="store_true",
+                      help="Only standard monthly (3rd-Friday) expirations.")
 
     return parser
 
@@ -888,6 +906,18 @@ def _cmd_deepdive(args) -> int:
     return 0
 
 
+def _cmd_parity(args) -> int:
+    settings = _resolved_settings(args)
+    try:
+        grid, summary, header = parity.build(args.ticker.upper(), settings)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    pd.set_option("display.max_columns", None, "display.width", 220)
+    print(parity.render_text(grid, summary, header))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
@@ -918,6 +948,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_log_chains(args)
     if args.command == "deepdive":
         return _cmd_deepdive(args)
+    if args.command == "parity":
+        return _cmd_parity(args)
     return 2
 
 
