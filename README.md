@@ -128,6 +128,18 @@ SEC_USER_AGENT="Your Name you@email" stock-research fetch-fundamentals AAPL MSFT
 # Build the as-of feature panel (EDGAR + prices + FRED macro) for a value model
 SEC_USER_AGENT="Your Name you@email" stock-research build-panel AAPL MSFT XOM --start 2020-01-01
 
+# Who's closest to joining the S&P 500? (scans the MidCap 400 by default)
+SEC_USER_AGENT="Your Name you@email" stock-research index-scan --side add --limit 50
+
+# Which current members are under the most visible deletion pressure?
+SEC_USER_AGENT="Your Name you@email" stock-research index-scan --side drop --limit 50
+
+# Labelled history for training: eligibility gates + forward add/drop labels
+SEC_USER_AGENT="Your Name you@email" stock-research build-index-panel FLEX POOL --start 2024-01-01
+
+# Does a model over the gate distances beat just ranking by readiness?
+stock-research train-index-model --side add --k 10 --importance
+
 # Add the simulated assignment/touch columns to the option screen itself
 stock-research screen --weekly --simulate --sort score
 
@@ -479,8 +491,133 @@ a **single-name** scorecard side by side.
 > get assigned in the same selloff). Caveat: at 35 windows the win is directionally
 > clear but not yet statistically airtight (Kupiec needs more windows).
 
+## S&P 500 membership (`index-scan`, `build-index-panel`)
+
+Index additions and deletions are the episodic form of the passive-flow trade: when
+a name enters the index, every fund tracking it is *required* to buy. The rules are
+published, so this is a constrained classification problem rather than a guess.
+
+`index-scan --side add` ranks non-members by **readiness** — how close the binding
+continuous criterion is to its threshold, on a 0–1 scale where 1.0 means met:
+
+```
+side ticker      as_of  readiness binding_gate  ratio_market_cap  hard_blocks  eligible
+ add     AA 2026-08-10     0.5962   market_cap            0.5962                  False
+ add    AAL 2026-08-10     0.4562   market_cap            0.4562                  False
+```
+
+The gates, from the S&P U.S. Indices methodology:
+
+| Gate | Rule |
+| --- | --- |
+| `market_cap` | Unadjusted company market cap ≥ the current threshold (`config/spx_thresholds.yaml`). |
+| `float_market_cap` | Float-adjusted cap ≥ 50% of that threshold. |
+| `iwf` | Investable weight factor (public float) ≥ 0.10. |
+| `liquidity_ratio` | Annual dollar value traded / float-adjusted cap ≥ 0.75. |
+| `monthly_volume` | ≥ 250k shares traded in **each** of the prior six months (scored on the weakest month). |
+| `viability` | Positive GAAP earnings in the most recent quarter **and** summed over the trailing four. |
+| `seasoning` | ≥ 12 months trading on an eligible exchange. |
+| `exchange`, `domicile` | Eligible US exchange; US domiciled. |
+
+Binary gates (`viability`, `seasoning`, `exchange`, `domicile`) are **hard blocks** —
+one failure zeroes readiness regardless of size. Missing data never counts as a pass:
+the gate resolves to unknown, lands in the `unknown` column, and marks the readiness
+score as an upper bound.
+
+`build-index-panel` produces the training set — the same gates evaluated as-of each
+historical date, joined to whether the name was added or dropped inside a forward
+window. Membership history is reconstructed by rewinding today's constituent list
+through the change table, so labels don't look ahead. On a two-name sanity check the
+signal is visible before the event:
+
+```
+ticker      as_of  was_member  label_add  label_drop  readiness
+  FLEX 2025-04-01       False          0           0     0.6412
+  FLEX 2025-10-01       False          1           0     0.9736   <- add fires 2026-06-22
+  POOL 2025-04-01        True          0           0     0.5779
+  POOL 2026-04-01        True          0           1     0.3262   <- drop fires 2026-06-22
+```
+
+### The model (`train-index-model`)
+
+The gates say who is *eligible*. They don't say who the committee picks, and in any
+month far more names are eligible than are added. `train-index-model` asks whether a
+classifier over the gate distances predicts the pick better than ranking by
+`readiness` alone.
+
+- **Features** are the gate ratios plus trajectory terms derived from the panel's own
+  history — 3- and 12-month change, and 12-month rolling min/mean of the market-cap
+  ratio, volume ratio and turnover. Closing fast on the threshold, and *holding*
+  above it, are different from sitting still at the same level.
+- **Raw ratios, not cross-sectional ranks.** Each ratio is already normalized by the
+  threshold in force on its own date, so it's comparable across time while keeping
+  the absolute "am I over the line" information that ranking would destroy.
+- **Purged walk-forward.** A label at date D spans (D, D+H months], so to predict D
+  the model trains only on rows whose label window closed at or before D − H.
+- **Scored against the baseline it must beat**, on `precision@k` — of the k names you
+  flag each month, what fraction actually change membership inside the horizon. AUC
+  on a ~1.5%-positive problem flatters everything.
+- **The baseline is `ratio_market_cap` alone** — size relative to the threshold in
+  force that date, negated for the drop side. Deliberately the *strongest* simple
+  rule, not the most flattering one. It is **not** `readiness`: readiness clips at
+  1.0 and collapses to 0.0 on a hard block, so it ties at both ends of the ranking
+  and scores far worse (AUC 0.722 vs 0.923 on the add side). Readiness is the right
+  eligibility score and the wrong ranker.
+
+### Results
+
+Composite 1500 panel (1,505 names × 67 monthly dates, 98,545 rows), 12-month label,
+purged walk-forward:
+
+| | add: model | add: cap/threshold | drop: model | drop: −cap/threshold |
+| --- | --- | --- | --- | --- |
+| base rate | 1.38% | | 1.96% | |
+| AUC | 0.922 | **0.923** | 0.918 | **0.932** |
+| precision@10 | 0.298 | **0.475** | **0.381** | 0.276 |
+| recall@10 | 0.241 | **0.410** | **0.402** | 0.295 |
+
+**On additions the one-feature rule wins outright**, at every k, and ties the model on
+AUC. Market cap relative to the index threshold is very nearly the whole signal —
+a 34x lift over the 1.38% base rate from a single number. The gradient-boosted model
+over gate distances and trajectories does not improve on it.
+
+**On deletions the model does add something at the top of the list** (+0.106
+precision@10), though the simple rule still has the better global ranking. The gain
+is concentrated in the k≤10 range and disappears by k=20.
+
+Read together, this is the *Disappearing Index Effect* showing up in your own data:
+index changes are highly predictable, and predictable from one obvious variable. If
+the prediction is that easy, the returns to making it have already been competed away.
+
+### What this can and can't tell you
+
+- **Thresholds go stale.** S&P reviews the market-cap range quarterly.
+  `config/spx_thresholds.yaml` carries the revisions with a source URL each, and a
+  scan warns when the newest row is old enough that a revision was probably missed.
+  Rows marked `verified: false` are gaps — fix them before trusting a backtest that
+  spans them.
+- **Membership history is reconstructed from Wikipedia's *selected* changes table.**
+  Missed rows make the rewind drift, worse the further back you go. Inconsistencies
+  are reported, not swallowed. For publication-grade history you want CRSP or S&P's
+  own index files.
+- **Float has no free point-in-time source**, so the historical panel leaves the
+  float and liquidity gates unknown and carries `turnover` (dollar volume / unadjusted
+  cap) as a computable stand-in feature. The live scan fills float in properly.
+- **Deletion risk is a heuristic, not a rule.** S&P removes members that
+  "substantially" violate the criteria at committee discretion, and most real
+  deletions are M&A and bankruptcy — which no fundamental screen anticipates. Read a
+  low score as "no visible pressure", not "safe".
+- **A correct prediction is table stakes, not edge.** Greenwood & Sammon (*The
+  Disappearing Index Effect*, Journal of Finance 2025) find the addition abnormal
+  return fell from ~7.4% in the 1990s to ~0.3% in the 2010s, and deletions from
+  large negative to ~0.1% — because most adds are now MidCap 400 migrations that
+  index funds already hold, and the changes became predictable enough to be
+  front-run.
+
 ## Configuration
 
+- **`config/spx_thresholds.yaml`** — S&P 500 eligibility parameters: the dated
+  market-cap threshold schedule (with a source per row) and the fixed criteria.
 - **`config/universe.yaml`** — the default watchlist (stocks + ETFs). The screener
   re-verifies each ticker's market cap / AUM ≥ $1B at runtime and drops anything below.
 - **`config/weeklys.csv`** — the cached Cboe weeklies universe (used by `--weeklys`).
@@ -501,6 +638,11 @@ src/stock_research/
   edgar.py          # SEC EDGAR point-in-time fundamentals fetch/parse -> data/edgar/
   fred.py           # FRED macro series (rates) with as-of lookup -> data/fred/
   panel.py          # as-of feature panel (EDGAR + prices + FRED) -> data/panel/
+  spx/rules.py      # S&P 500 eligibility gates (pure) + readiness / deletion pressure
+  spx/membership.py # constituents + change events, point-in-time membership rewind
+  spx/panel.py      # as-of eligibility panel with forward add/drop labels -> data/spx/
+  spx/scan.py       # rank today's addition candidates / members under deletion pressure
+  spx/model.py      # purged walk-forward add/drop classifier vs. the readiness baseline
   valuemodel.py     # LightGBM cross-sectional value ranker + purged walk-forward IC
   deepdive.py       # single-ticker grid + charts
   simulate.py       # Monte-Carlo touch/terminal probabilities, VaR/CVaR, drawdown (GPU/CPU)
@@ -510,6 +652,6 @@ src/stock_research/
   joint.py          # cross-asset dynamic factor model: joint/portfolio tail risk
   cli.py            # screen / valuescan / longcall / log-chains / riskscan / deepdive / ...
 app.py              # Streamlit dashboard wrapping every tool (streamlit run app.py)
-config/             # universe.yaml, settings.yaml
+config/             # universe.yaml, settings.yaml, spx_thresholds.yaml
 tests/              # unit tests for the math
 ```

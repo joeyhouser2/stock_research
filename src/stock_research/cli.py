@@ -9,6 +9,7 @@ import sys
 import pandas as pd
 
 from . import backtest, chainlog, deepdive, longcall, parity, riskscan, screener, simulate, valuescan
+from .spx import model as spx_model, panel as spx_panel, scan as spx_scan
 from .config import load_settings, load_universe, override
 
 
@@ -283,6 +284,54 @@ def build_parser() -> argparse.ArgumentParser:
     tv.add_argument("--horizon-days", type=int, default=126,
                     help="Forward-return horizon in calendar days (default: 126 ~6mo).")
     tv.add_argument("--quiet", action="store_true", help="Suppress progress.")
+
+    ix = sub.add_parser("index-scan",
+                        help="Rank S&P 500 addition candidates by eligibility readiness, "
+                             "and/or current members by deletion pressure.")
+    ix.add_argument("--side", choices=("add", "drop", "both"), default="add",
+                    help="add = who's closest to joining (default), drop = who's under "
+                         "pressure to leave, both = run each.")
+    ix.add_argument("--tickers", nargs="+",
+                    help="Explicit candidate list (default: S&P MidCap 400 for adds, "
+                         "current members for drops).")
+    ix.add_argument("--limit", type=int, help="Cap how many names are scanned.")
+    ix.add_argument("--history-days", type=int, default=1825,
+                    help="Days of price history to pull per name (default: 1825).")
+    ix.add_argument("--refresh", action="store_true",
+                    help="Re-download the membership tables instead of using the cache.")
+    ix.add_argument("--top", type=int, default=25, help="Rows to print (default: 25).")
+    ix.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
+    bi = sub.add_parser("build-index-panel",
+                        help="Build the as-of S&P 500 eligibility panel with forward "
+                             "add/drop labels.")
+    bi.add_argument("tickers", nargs="+", help="Ticker(s) to include.")
+    bi.add_argument("--start", help="Panel start date YYYY-MM-DD (default: 5 years ago).")
+    bi.add_argument("--end", help="Panel end date YYYY-MM-DD (default: today).")
+    bi.add_argument("--freq-months", type=int, default=3,
+                    help="Months between evaluation dates (default: 3).")
+    bi.add_argument("--horizon-months", type=int, default=12,
+                    help="Forward window for the add/drop label (default: 12).")
+    bi.add_argument("--history-days", type=int, default=3650,
+                    help="Days of price history to pull per name (default: 3650).")
+    bi.add_argument("--refresh", action="store_true",
+                    help="Re-download the membership tables instead of using the cache.")
+    bi.add_argument("--quiet", action="store_true", help="Suppress per-ticker progress.")
+
+    tm = sub.add_parser("train-index-model",
+                        help="Purged walk-forward validation of the S&P 500 add/drop "
+                             "classifier against the readiness-rule baseline.")
+    tm.add_argument("--panel", help="Panel CSV (default: newest data/spx/spx_panel_*.csv).")
+    tm.add_argument("--side", choices=("add", "drop"), default="add",
+                    help="Model index additions (default) or deletions.")
+    tm.add_argument("--horizon-months", type=int, default=12,
+                    help="Label horizon the panel was built with (default: 12). Also "
+                         "the purge distance, so this must match the panel.")
+    tm.add_argument("--k", type=int, default=10,
+                    help="Top-k cutoff for precision/recall (default: 10).")
+    tm.add_argument("--importance", action="store_true",
+                    help="Also print feature importances from a full-sample fit.")
+    tm.add_argument("--quiet", action="store_true", help="Suppress per-date progress.")
 
     xf = sub.add_parser("extract-xbrl-fundamentals",
                         help="Extract point-in-time BS/IS/CF fundamentals from the local XBRL "
@@ -918,6 +967,72 @@ def _cmd_parity(args) -> int:
     return 0
 
 
+def _cmd_index_scan(args) -> int:
+    df = spx_scan.run(side=args.side, tickers=args.tickers, limit=args.limit,
+                      refresh=args.refresh, history_days=args.history_days,
+                      verbose=not args.quiet)
+    if df.empty:
+        print("No candidates scanned.", file=sys.stderr)
+        return 1
+    sort_col = "deletion_risk" if args.side == "drop" else "readiness"
+    cols = [c for c in ("side", "ticker", "as_of", sort_col, "binding_gate",
+                        "ratio_market_cap", "ratio_liquidity_ratio", "hard_blocks",
+                        "unknown", "eligible") if c in df.columns]
+    pd.set_option("display.max_columns", None, "display.width", 220)
+    print("\n" + df.sort_values(sort_col, ascending=False)[cols].head(args.top).to_string(index=False))
+    if args.side == "drop":
+        print("\ndeletion_risk is a heuristic on market cap vs. the current ADDITION "
+              "threshold plus the GAAP viability screen — not a published rule. Most "
+              "real deletions are M&A and bankruptcy, which this cannot see coming.")
+    else:
+        print("\nreadiness = how close the binding continuous gate is to its threshold "
+              "(1.0 = met). 0.0 means a hard block; see hard_blocks. Rows with anything "
+              "in `unknown` have an upper-bound score.")
+    return 0
+
+
+def _cmd_build_index_panel(args) -> int:
+    df = spx_panel.run([t.upper() for t in args.tickers], start=args.start, end=args.end,
+                       freq_months=args.freq_months, horizon_months=args.horizon_months,
+                       history_days=args.history_days, refresh=args.refresh,
+                       verbose=not args.quiet)
+    if df.empty:
+        print("Empty panel — nothing written.", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_train_index_model(args) -> int:
+    path = args.panel
+    if not path:
+        found = sorted(spx_panel.PANEL_DIR.glob("spx_panel_*.csv"))
+        if not found:
+            print("No panel found. Run `stock-research build-index-panel` first.",
+                  file=sys.stderr)
+            return 1
+        path = found[-1]
+    # low_memory=False: the label/eligible columns are legitimately mixed-type
+    # (bool + NaN) and chunked inference warns about it on a large panel.
+    df = pd.read_csv(path, low_memory=False)
+    print(f"Panel: {path} ({len(df)} rows, {df['ticker'].nunique()} names)")
+
+    preds = spx_model.walk_forward(df, side=args.side, horizon_months=args.horizon_months,
+                                   verbose=not args.quiet)
+    if preds.empty:
+        print("Not enough resolved history to validate — widen the panel's date range.",
+              file=sys.stderr)
+        return 1
+    score = spx_model.evaluate(preds, side=args.side, k=args.k)
+    print(spx_model.render_text(score))
+
+    if args.importance:
+        imp = spx_model.feature_importance(df, side=args.side)
+        if not imp.empty:
+            print("\nFeature importance (full-sample fit — descriptive, not validation):")
+            print(imp.head(15).to_string(index=False))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
@@ -942,6 +1057,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_build_panel(args)
     if args.command == "train-value":
         return _cmd_train_value(args)
+    if args.command == "index-scan":
+        return _cmd_index_scan(args)
+    if args.command == "build-index-panel":
+        return _cmd_build_index_panel(args)
+    if args.command == "train-index-model":
+        return _cmd_train_index_model(args)
     if args.command == "extract-xbrl-fundamentals":
         return _cmd_extract_xbrl_fundamentals(args)
     if args.command == "log-chains":

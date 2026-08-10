@@ -178,6 +178,14 @@ def point_in_time_fundamentals(facts: dict, concepts=DEFAULT_CONCEPTS) -> pd.Dat
 # --------------------------------------------------------------------------- #
 # Point-in-time as-of extraction (pure — the no-look-ahead core).
 # --------------------------------------------------------------------------- #
+def _quarterly_rows(g: pd.DataFrame) -> pd.DataFrame:
+    """The distinct quarterly (~90-day) reports in a flow concept's rows, by period end."""
+    g = g.copy()
+    g["days"] = (g["end"] - g["start"]).dt.days
+    q = g[(g["days"] >= 80) & (g["days"] <= 100)].drop_duplicates("end", keep="last")
+    return q.sort_values("end")
+
+
 def _ttm(g: pd.DataFrame) -> float:
     """Trailing-twelve-month value for a flow concept from its reported rows.
 
@@ -186,8 +194,7 @@ def _ttm(g: pd.DataFrame) -> float:
     """
     g = g.copy()
     g["days"] = (g["end"] - g["start"]).dt.days
-    q = g[(g["days"] >= 80) & (g["days"] <= 100)].drop_duplicates("end", keep="last")
-    q = q.sort_values("end")
+    q = _quarterly_rows(g)
     if len(q) >= 4:
         return float(q["val"].iloc[-4:].sum())
     ann = g[(g["days"] >= 350) & (g["days"] <= 380)].sort_values(["end", "filed"])
@@ -196,6 +203,36 @@ def _ttm(g: pd.DataFrame) -> float:
     if len(q):
         return float(q["val"].sum() * 4.0 / len(q))     # annualize a partial year
     return float("nan")
+
+
+def as_of_quarters(long_df: pd.DataFrame, concept: str, as_of, n: int = 4) -> list[float]:
+    """The ``n`` most recent quarterly values of ``concept`` filed by ``as_of``, oldest-first.
+
+    Used by the index-eligibility viability screen, which needs the individual
+    quarters rather than the TTM sum :func:`as_of_snapshot` returns.
+
+    Returns fewer than ``n`` values (possibly none) when the filings aren't there.
+    Companies that report only annual and cumulative year-to-date figures yield no
+    quarterly rows at all — the caller must treat a short list as "unknown", not
+    as a failed screen.
+    """
+    as_of = pd.Timestamp(as_of)
+    if long_df.empty:
+        return []
+    df = long_df[long_df["concept"] == concept].copy()
+    if df.empty:
+        return []
+    df["filed"] = pd.to_datetime(df["filed"], errors="coerce")
+    df = df[df["filed"] <= as_of]
+    if df.empty:
+        return []
+    df["end"] = pd.to_datetime(df["end"], errors="coerce")
+    df["start"] = pd.to_datetime(df["start"], errors="coerce")
+    df = df.dropna(subset=["start", "end"])
+    if df.empty:
+        return []
+    q = _quarterly_rows(df)
+    return [float(v) for v in q["val"].iloc[-n:]]
 
 
 def as_of_snapshot(long_df: pd.DataFrame, as_of) -> dict[str, float]:
