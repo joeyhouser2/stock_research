@@ -10,8 +10,9 @@ def test_grid_columns_default_is_unchanged():
 
 def test_grid_columns_inserts_sim_after_prob_otm():
     cols = deepdive.grid_columns(True)
-    # The three probabilities sit together, with touch right after the terminal sim.
-    assert cols.index("sim_otm") == cols.index("prob_otm") + 1
+    # The probabilities sit together: prob_otm, rn_prob_otm, sim_otm, sim_touch.
+    assert cols.index("rn_prob_otm") == cols.index("prob_otm") + 1
+    assert cols.index("sim_otm") == cols.index("rn_prob_otm") + 1
     assert cols.index("sim_touch") == cols.index("sim_otm") + 1
     assert cols.index("delta") == cols.index("sim_touch") + 1
     # Every base column survives, plus exactly the two sim columns.

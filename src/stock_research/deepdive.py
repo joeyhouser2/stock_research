@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import data, fundamentals, metrics, simulate
+from . import data, fundamentals, metrics, riskneutral, simulate
 from .config import REPO_ROOT, Settings
 
 GRID_COLUMNS = [
     "expiry", "exp_type", "dte", "strike", "pct_otm", "mid", "annual_yield", "score",
-    "if_called_yield", "prob_otm", "delta", "downside_cushion", "breakeven",
+    "if_called_yield", "prob_otm", "rn_prob_otm", "delta", "downside_cushion", "breakeven",
     "iv", "hv", "iv_hv", "open_interest", "volume", "spread_pct",
 ]
 
@@ -26,7 +26,7 @@ def grid_columns(simulate_risk: bool) -> list[str]:
     """Grid column order, with the simulation columns slotted next to prob_otm."""
     if not simulate_risk:
         return list(GRID_COLUMNS)
-    i = GRID_COLUMNS.index("prob_otm") + 1
+    i = GRID_COLUMNS.index("rn_prob_otm") + 1
     return GRID_COLUMNS[:i] + SIM_COLUMNS + GRID_COLUMNS[i:]
 
 
@@ -83,6 +83,10 @@ def build(
         if chain.empty:
             continue
 
+        # Model-free market-implied P(S_T<=K) per strike, from the shape of the
+        # call-price curve itself — the benchmark for prob_otm/sim_otm below.
+        rn_probs = riskneutral.implied_prob_otm(chain, dte, settings.risk_free_rate)
+
         sim = None
         if simulate_risk:
             sim = simulate.simulate(
@@ -114,6 +118,7 @@ def build(
                 continue
             stat["expiry"] = expiry
             stat["exp_type"] = exp_type
+            stat["rn_prob_otm"] = rn_probs.get(stat["strike"])
             if sim is not None:
                 k = stat["strike"]
                 stat["sim_otm"] = round(sim.prob_terminal_below(k), 4)

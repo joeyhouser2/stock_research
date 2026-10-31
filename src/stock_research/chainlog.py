@@ -2,9 +2,11 @@
 
 Free data has no *historical* implied volatility, which blocks a true IV-path
 model. The fix is to start collecting it ourselves: this appends a daily snapshot
-of the call chains (within a DTE window) to ``data/chains/chains_YYYYMMDD.csv``.
-Run it on a schedule (cron / Task Scheduler); after enough days accumulate, the
-per-contract IV series unlocks training/validating the joint (price, IV) model.
+of both the call and put chains (within a DTE window) to
+``data/chains/chains_YYYYMMDD.csv``. Run it on a schedule (cron / Task Scheduler);
+after enough days accumulate, the per-contract IV series unlocks training/
+validating the joint (price, IV) model, plus put-side signals (skew, call-put
+IV spread, put/call ratios) that need both sides of the chain to exist at all.
 """
 
 from __future__ import annotations
@@ -17,13 +19,13 @@ from . import data
 from .config import REPO_ROOT
 
 CHAINS_DIR = REPO_ROOT / "data" / "chains"
-FIELDS = ["date", "ticker", "spot", "expiry", "dte", "strike", "bid", "ask",
+FIELDS = ["date", "ticker", "spot", "expiry", "dte", "side", "strike", "bid", "ask",
           "last", "iv", "open_interest", "volume", "contract"]
 
 
 def snapshot_ticker(ticker: str, *, min_dte: int, max_dte: int,
                     today: dt.date | None = None) -> list[dict]:
-    """Rows for one ticker's call chains within the DTE window. Empty on failure."""
+    """Rows for one ticker's call+put chains within the DTE window. Empty on failure."""
     today = today or dt.date.today()
     snap = data.get_snapshot(ticker)
     if snap is None:
@@ -33,17 +35,18 @@ def snapshot_ticker(ticker: str, *, min_dte: int, max_dte: int,
         dte = data.days_to_expiry(expiry, today)
         if dte < min_dte or dte > max_dte:
             continue
-        chain = data.get_call_chain(ticker, expiry)
-        if chain.empty:
-            continue
-        for _, c in chain.iterrows():
-            rows.append({
-                "date": today.isoformat(), "ticker": ticker, "spot": round(snap.price, 4),
-                "expiry": expiry, "dte": dte, "strike": _f(c.get("strike")),
-                "bid": _f(c.get("bid")), "ask": _f(c.get("ask")), "last": _f(c.get("lastPrice")),
-                "iv": _f(c.get("impliedVolatility")), "open_interest": _i(c.get("openInterest")),
-                "volume": _i(c.get("volume")), "contract": c.get("contractSymbol"),
-            })
+        calls, puts = data.get_option_chain(ticker, expiry)
+        for side, chain in (("call", calls), ("put", puts)):
+            if chain.empty:
+                continue
+            for _, c in chain.iterrows():
+                rows.append({
+                    "date": today.isoformat(), "ticker": ticker, "spot": round(snap.price, 4),
+                    "expiry": expiry, "dte": dte, "side": side, "strike": _f(c.get("strike")),
+                    "bid": _f(c.get("bid")), "ask": _f(c.get("ask")), "last": _f(c.get("lastPrice")),
+                    "iv": _f(c.get("impliedVolatility")), "open_interest": _i(c.get("openInterest")),
+                    "volume": _i(c.get("volume")), "contract": c.get("contractSymbol"),
+                })
     return rows
 
 
