@@ -1,0 +1,197 @@
+# Foreign equities for `valuescan --foreign`. Market cap is converted to USD at runtime,
+# so the $1B floor applies uniformly. Yahoo suffixes: .T Tokyo, .HK Hong Kong, .KS Korea,
+# .TW Taiwan, .L London, .DE Xetra, .PA Paris, .AS Amsterdam, .SW Swiss, .MI Milan,
+# .MC Madrid, .CO Copenhagen, .ST Stockholm, .OL Oslo, .AX Australia, .NS India,
+# .SA Brazil, .TO Toronto, .MX Mexico.
+#
+# US-listed ADRs whose company reports in another currency get `currency_mismatch`;
+# their EV/EBITDA, FCF yield and Graham ratio are dropped rather than trusted.
+# Local listings are chosen mostly where no liquid US ADR exists, to limit duplicates.
+
+stocks:
+  # --- US-listed ADRs / foreign filers ---
+  # Asia
+  - TSM
+  - TM
+  - SONY
+  - HMC
+  - MUFG
+  - SMFG
+  - MFG
+  - BABA
+  - PDD
+  - JD
+  - BIDU
+  - NTES
+  - TCOM
+  - BEKE
+  - YUMC
+  - LI
+  - KB
+  - SHG
+  - PKX
+  - UMC
+  - ASX
+  - INFY
+  - WIT
+  - HDB
+  - IBN
+  # Europe
+  - ASML
+  - SAP
+  - NVO
+  - NVS
+  - AZN
+  - GSK
+  - SNY
+  - UL
+  - DEO
+  - BTI
+  - SHEL
+  - BP
+  - TTE
+  - E
+  - EQNR
+  - HSBC
+  - BCS
+  - ING
+  - SAN
+  - BBVA
+  - UBS
+  - DB
+  - NOK
+  - ERIC
+  - VOD
+  - TEF
+  - ARM
+  - SPOT
+  - STLA
+  # Americas / other
+  - VALE
+  - PBR
+  - ITUB
+  - BBD
+  - NU
+  - ABEV
+  - GGB
+  - SID
+  - CX
+  - AMX
+  - FMX
+  - KOF
+  - TX
+  - BHP
+  - RIO
+  - GFI
+  - AU
+  - HMY
+  - SBSW
+  - TEVA
+  - TD
+  - RY
+  - BMO
+  - BNS
+  - CM
+  - CNQ
+  - SU
+  - ENB
+  - CNI
+  - CP
+  - MFC
+  - SLF
+
+  # --- Local listings ---
+  # Japan
+  - 6861.T     # Keyence
+  - 8058.T     # Mitsubishi Corp
+  - 8001.T     # Itochu
+  - 8031.T     # Mitsui & Co
+  - 9432.T     # NTT
+  - 9433.T     # KDDI
+  - 4063.T     # Shin-Etsu Chemical
+  - 9984.T     # SoftBank Group
+  - 6501.T     # Hitachi
+  - 7974.T     # Nintendo
+  - 8766.T     # Tokio Marine
+  - 6098.T     # Recruit
+  - 7011.T     # Mitsubishi Heavy
+  - 5401.T     # Nippon Steel
+  # Korea / Taiwan
+  - 005930.KS  # Samsung Electronics
+  - 000660.KS  # SK Hynix
+  - 005380.KS  # Hyundai Motor
+  - 000270.KS  # Kia
+  - 2317.TW    # Hon Hai
+  - 2454.TW    # MediaTek
+  # Hong Kong / China
+  - 0700.HK    # Tencent
+  - 0939.HK    # China Construction Bank
+  - 1398.HK    # ICBC
+  - 0941.HK    # China Mobile
+  - 0883.HK    # CNOOC
+  - 2318.HK    # Ping An
+  - 3690.HK    # Meituan
+  - 1810.HK    # Xiaomi
+  - 1211.HK    # BYD
+  - 0005.HK    # HSBC (HK line)
+  # UK
+  - ULVR.L     # Unilever
+  - LLOY.L     # Lloyds
+  - NWG.L      # NatWest
+  - LSEG.L     # London Stock Exchange Group
+  - GLEN.L     # Glencore
+  - AAL.L      # Anglo American
+  - TSCO.L     # Tesco
+  - BA.L       # BAE Systems
+  - RR.L       # Rolls-Royce
+  - IMB.L      # Imperial Brands
+  - LGEN.L     # Legal & General
+  - AV.L       # Aviva
+  # Continental Europe
+  - SIE.DE     # Siemens
+  - ALV.DE     # Allianz
+  - MUV2.DE    # Munich Re
+  - BMW.DE     # BMW
+  - MBG.DE     # Mercedes-Benz
+  - VOW3.DE    # Volkswagen
+  - BAS.DE     # BASF
+  - DTE.DE     # Deutsche Telekom
+  - MC.PA      # LVMH
+  - OR.PA      # L'Oreal
+  - BNP.PA     # BNP Paribas
+  - AIR.PA     # Airbus
+  - SU.PA      # Schneider Electric
+  - CS.PA      # AXA
+  - RNO.PA     # Renault
+  - NESN.SW    # Nestle
+  - ROG.SW     # Roche
+  - ZURN.SW    # Zurich Insurance
+  - ISP.MI     # Intesa Sanpaolo
+  - UCG.MI     # UniCredit
+  - ENEL.MI    # Enel
+  - ITX.MC     # Inditex
+  - IBE.MC     # Iberdrola
+  - VOLV-B.ST  # Volvo
+  - INVE-B.ST  # Investor AB
+  - DSV.CO     # DSV
+  # Australia
+  - CBA.AX     # Commonwealth Bank
+  - CSL.AX     # CSL
+  - WBC.AX     # Westpac
+  - NAB.AX     # National Australia Bank
+  - FMG.AX     # Fortescue
+  - WDS.AX     # Woodside
+  # India
+  - RELIANCE.NS
+  - TCS.NS
+  - SBIN.NS
+  - BHARTIARTL.NS
+  - LT.NS
+  - ITC.NS
+  - COALINDIA.NS
+  - ONGC.NS
+  # Latin America
+  - PETR4.SA   # Petrobras pref (local)
+  - BBAS3.SA   # Banco do Brasil
+  - WALMEX.MX  # Walmart de Mexico
+  - GFNORTEO.MX  # Banorte

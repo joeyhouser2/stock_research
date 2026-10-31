@@ -325,6 +325,41 @@ specific setups (e.g. smaller, cheap, quality names): `--min-market-cap` /
 by the composite. The watchlist/weeklys universes skew large-cap; add `--sec-universe`
 (broad SEC filer list, pair with `--max-tickers`/`--throttle`) to reach smaller names.
 
+**Undervaluation methods and votes.** Besides the blend, each name is scored by
+several classic methods (`m_<method>` columns). A method **votes** for a name when it
+lands in that method's best 20% (Graham: when it passes Graham's tests); `votes`
+counts how many agree and `methods_hit` lists them. Pick methods with `--method`
+(repeatable, default all) and rank by agreement with `--sort votes`.
+
+| Method | Cheap means |
+|---|---|
+| `blend` | the `value_score` composite above |
+| `graham` | P/E ≤ 15, P/B ≤ 1.5, P/E × P/B ≤ 22.5; ranked by P/E × P/B and price / Graham number |
+| `magic` | Greenblatt-style earnings yield (EBITDA/EV) + ROE |
+| `deep` | lowest P/E and P/B, quality ignored |
+| `fcf` | highest FCF / market cap |
+| `dividend` | highest yield among profitable payers with payout < 100% |
+| `contrarian` | furthest below the 52-week high while still cheap and profitable |
+| `analyst` | largest upside to the mean analyst target |
+
+**Foreign stocks and ETFs.** `--foreign` adds `config/foreign_universe.yaml` (ADRs and
+local listings like `7203.T`, `SHEL.L`); `--etfs` adds `config/etf_universe.yaml`
+(country, sector and factor ETFs). Market caps are converted to USD for the size gate
+(pence quotes handled). When a listing's quote currency differs from its reporting
+currency (e.g. a USD ADR of a CNY reporter) `currency_mismatch` is set and EV/EBITDA,
+FCF yield and the Graham ratio are dropped. `--peer country` ranks stocks within their
+country (countries with < 5 names pooled as "Other").
+
+ETFs are always ranked **against other ETFs only** (holdings P/E, P/B, yield, off-high,
+NAV premium) and printed in their own table. Leveraged/inverse ETFs and ETFs without a
+P/E (bonds, commodities) stay in the CSV with an `excluded` reason but are not scored.
+`--assets stock|etf` limits the scan to one class.
+
+```bash
+stock-research valuescan --weeklys --foreign --etfs --sort votes
+stock-research valuescan --foreign --assets stock --method graham --method deep --peer country
+```
+
 > ⚠️ This uses **current** fundamentals, so it's valid for a *live* ranking (today's
 > data, today's decision) but is **not backtested or trained** — honestly validating
 > a value model needs point-in-time fundamentals (the planned next step). Treat it as

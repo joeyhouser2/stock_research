@@ -82,3 +82,45 @@ def test_pe_filter_passes_and_fails():
     none = Settings()
     assert _value_active(none, with_value=False) is False
     assert _passes_value_filters(rich, none) is True
+
+
+# --- extended fundamentals / currency --------------------------------------
+
+def test_major_currency_minor_units():
+    assert fundamentals.major_currency("GBp") == ("GBP", 100)
+    assert fundamentals.major_currency("GBP") == ("GBP", 1)
+    assert fundamentals.major_currency("jpy") == ("JPY", 1)
+    assert fundamentals.major_currency(None) == ("USD", 1)
+
+
+def test_extended_same_currency():
+    info = {"currency": "JPY", "financialCurrency": "JPY", "trailingEps": 350.0,
+            "bookValue": 3150.0, "freeCashflow": 2e12, "marketCap": 40e12,
+            "trailingAnnualDividendYield": 0.03, "country": "Japan", "longName": "Toyota"}
+    v = fundamentals.compute_extended(info, price=3000.0)
+    assert not v["currency_mismatch"]
+    assert v["fcf_yield"] == pytest.approx(0.05)
+    graham = (22.5 * 350 * 3150) ** 0.5
+    assert v["price_to_graham"] == pytest.approx(3000 / graham, abs=1e-3)
+    assert v["dividend_yield"] == 0.03 and v["name"] == "Toyota"
+
+
+def test_extended_pence_quote_uses_pounds_for_per_share_ratios():
+    info = {"currency": "GBp", "financialCurrency": "GBP", "trailingEps": 1.0, "bookValue": 10.0}
+    v = fundamentals.compute_extended(info, price=1500.0)        # 1500p = £15
+    assert v["currency"] == "GBP" and not v["currency_mismatch"]
+    assert v["price_to_graham"] == pytest.approx(15 / (22.5 * 10) ** 0.5, abs=1e-3)
+
+
+def test_extended_currency_mismatch_drops_raw_ratios():
+    info = {"currency": "USD", "financialCurrency": "CNY", "trailingEps": 4.0,
+            "bookValue": 67.0, "freeCashflow": 1e10, "marketCap": 2.4e11}
+    v = fundamentals.compute_extended(info, price=150.0)
+    assert v["currency_mismatch"]
+    assert v["fcf_yield"] is None and v["price_to_graham"] is None
+
+
+def test_extended_etf_yield_and_nav():
+    v = fundamentals.compute_extended({"yield": 0.04, "navPrice": 32.0}, price=32.32)
+    assert v["dividend_yield"] == 0.04
+    assert v["nav_discount"] == pytest.approx(0.01)

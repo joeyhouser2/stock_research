@@ -10,7 +10,7 @@ import pandas as pd
 
 from . import backtest, chainlog, deepdive, longcall, parity, riskscan, screener, simulate, valuescan
 from .spx import model as spx_model, panel as spx_panel, scan as spx_scan
-from .config import load_settings, load_universe, override
+from .config import CONFIG_DIR, load_settings, load_universe, override
 
 
 def _add_common_screen_args(p: argparse.ArgumentParser) -> None:
@@ -201,7 +201,20 @@ def build_parser() -> argparse.ArgumentParser:
     vs.add_argument("--min-margin", type=float, help="Keep only profit margin >= this.")
     vs.add_argument("--min-upside", type=float, help="Keep only analyst upside >= this.")
     vs.add_argument("--sort", choices=valuescan.SORT_KEYS, default="value_score",
-                    help="Rank by this column, descending (default: value_score).")
+                    help="Rank by this column, descending (default: value_score). "
+                         "'votes' = how many methods agree; m_<method> = one method's score.")
+    vs.add_argument("--method", action="append", choices=(*valuescan.METHODS, "all"),
+                    help="Undervaluation method(s) that score and vote; repeat to pick several "
+                         "(default: all). " + "; ".join(f"{k}: {v}".replace("%", "%%") for k, v
+                                                         in valuescan.METHOD_HELP.items()))
+    vs.add_argument("--peer", choices=("all", "country"), default="all",
+                    help="Rank stocks against all stocks (default) or within their country.")
+    vs.add_argument("--assets", choices=("all", "stock", "etf"), default="all",
+                    help="Which asset classes to rank (each is ranked separately).")
+    vs.add_argument("--foreign", action="store_true",
+                    help="Add the foreign stocks in config/foreign_universe.yaml.")
+    vs.add_argument("--etfs", action="store_true",
+                    help="Add the equity ETFs in config/etf_universe.yaml.")
     vs.add_argument("--tickers", nargs="+", help="Override the universe with these tickers.")
     vs.add_argument("--weeklys", action="store_true",
                     help="Scan the full Cboe weeklys universe instead of config/universe.yaml.")
@@ -768,26 +781,50 @@ def _cmd_generate(args) -> int:
     return 0
 
 
+def _text(width: int):
+    return lambda v: "" if pd.isna(v) else str(v)[:width]
+
+
 _VALUESCAN_COLUMNS = [
     ("ticker", "Ticker", str),
-    ("price", "Price", _money),
+    ("name", "Name", _text(22)),
+    ("country", "Country", _text(12)),
+    ("size_b", "Size $B", lambda v: _num(v, 1)),
     ("trailing_pe", "P/E", lambda v: _num(v, 1)),
     ("forward_pe", "Fwd P/E", lambda v: _num(v, 1)),
-    ("peg", "PEG", lambda v: _num(v, 2)),
     ("price_to_book", "P/B", lambda v: _num(v, 1)),
+    ("ev_ebitda", "EV/EBITDA", lambda v: _num(v, 1)),
     ("roe", "ROE", _pct),
-    ("profit_margin", "Margin", _pct),
+    ("fcf_yield", "FCF yld", _pct),
+    ("dividend_yield", "Div", _pct),
     ("analyst_upside", "Upside", _pct),
     ("value_score", "Value", lambda v: _num(v, 2)),
+    ("votes", "Votes", _int),
+    ("methods_hit", "Methods", _text(40)),
+]
+_VALUESCAN_ETF_COLUMNS = [
+    ("ticker", "Ticker", str),
+    ("name", "Name", _text(26)),
+    ("category", "Category", _text(22)),
+    ("size_b", "AUM $B", lambda v: _num(v, 1)),
+    ("trailing_pe", "P/E", lambda v: _num(v, 1)),
+    ("price_to_book", "P/B", lambda v: _num(v, 1)),
+    ("dividend_yield", "Yield", _pct),
+    ("pct_off_52w_high", "Off high", _pct),
+    ("nav_discount", "vs NAV", _pct),
+    ("value_score", "Value", lambda v: _num(v, 2)),
+    ("votes", "Votes", _int),
+    ("methods_hit", "Methods", _text(30)),
 ]
 
 
-def _print_valuescan_table(df, n: int) -> None:
+def _print_valuescan_table(df, n: int, *, title: str = "value/quality names",
+                           columns=_VALUESCAN_COLUMNS) -> None:
     from rich.console import Console
     from rich.table import Table
 
-    cols = [c for c in _VALUESCAN_COLUMNS if c[0] in df.columns]
-    table = Table(title=f"Top {n} value/quality names", title_style="bold",
+    cols = [c for c in columns if c[0] in df.columns]
+    table = Table(title=f"Top {n} {title}", title_style="bold",
                   header_style="bold cyan")
     for i, (_, header, _fmt) in enumerate(cols):
         table.add_column(header, justify="left" if i == 0 else "right", no_wrap=True)
@@ -820,17 +857,30 @@ def _cmd_valuescan(args) -> int:
             throttle=args.throttle, max_tickers=args.max_tickers, verbose=verbose)
     else:
         tickers = [t.upper() for t in args.tickers] if args.tickers else load_universe()
+    for flag, fname in ((args.foreign, "foreign_universe.yaml"), (args.etfs, "etf_universe.yaml")):
+        if flag:
+            tickers += [t for t in load_universe(CONFIG_DIR / fname) if t not in tickers]
 
+    methods = (valuescan.METHODS if not args.method or "all" in args.method
+               else tuple(dict.fromkeys(args.method)))
+    assets = ("stock", "etf") if args.assets == "all" else (args.assets,)
     if verbose:
         band = f"${settings.min_market_cap/1e9:.1f}B"
         band += f"–${settings.max_market_cap/1e9:.1f}B" if settings.max_market_cap else "+"
         print(f"Scanning {len(tickers)} names (cap {band}"
-              f"{', ' + str(len(filters)) + ' filters' if filters else ''}), ranked by {args.sort}...")
-    df = valuescan.run(tickers, settings, sort_by=args.sort, filters=filters,
-                       throttle=args.throttle, verbose=verbose)
+              f"{', ' + str(len(filters)) + ' filters' if filters else ''}), ranked by {args.sort}; "
+              f"methods: {', '.join(methods)}...")
+    df = valuescan.run(tickers, settings, sort_by=args.sort, filters=filters, methods=methods,
+                       peer=args.peer, assets=assets, throttle=args.throttle, verbose=verbose)
     if df.empty:
         return 1
-    _print_valuescan_table(df, min(len(df), 25))
+    scored = df[df["value_score"].notna()]
+    stocks, etfs = scored[scored["asset"] == "stock"], scored[scored["asset"] == "etf"]
+    if not stocks.empty:
+        _print_valuescan_table(stocks, min(len(stocks), 25), title="stocks")
+    if not etfs.empty:
+        _print_valuescan_table(etfs, min(len(etfs), 15), title="ETFs (ranked vs ETFs only)",
+                               columns=_VALUESCAN_ETF_COLUMNS)
     return 0
 
 

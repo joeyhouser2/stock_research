@@ -1,0 +1,105 @@
+# Equity ETFs for `valuescan --etfs`, ranked against each other (never against stocks)
+# on their holdings' P/E and P/B, yield, NAV premium and distance off the 52-week high.
+# Leveraged/inverse funds and funds without a P/E (bonds, commodities) are flagged and
+# left unscored, so adding them here is harmless but pointless.
+
+etfs:
+  # Broad US
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - MDY
+  - RSP
+  # Style / factor
+  - VTV
+  - IWD
+  - RPV
+  - VLUE
+  - IWN
+  - VBR
+  - AVUV
+  - DFSV
+  - COWZ
+  - SCHD
+  - VYM
+  - DVY
+  - HDV
+  - QUAL
+  - MTUM
+  - USMV
+  # Regions
+  - EFA
+  - VEA
+  - VGK
+  - EEM
+  - VWO
+  - IEMG
+  - AAXJ
+  # Countries
+  - EWJ
+  - EWG
+  - EWU
+  - EWQ
+  - EWI
+  - EWP
+  - EWL
+  - EWN
+  - EWD
+  - EWC
+  - EWA
+  - EWH
+  - EWS
+  - EWT
+  - EWY
+  - EWZ
+  - EWW
+  - EZA
+  - INDA
+  - FXI
+  - MCHI
+  - KWEB
+  - EIDO
+  - EPHE
+  - THD
+  - VNM
+  - TUR
+  - EPOL
+  - ECH
+  - EPU
+  - ARGT
+  - GREK
+  - KSA
+  # US sectors
+  - XLB
+  - XLC
+  - XLE
+  - XLF
+  - XLI
+  - XLK
+  - XLP
+  - XLRE
+  - XLU
+  - XLV
+  - XLY
+  # Industries
+  - SMH
+  - XBI
+  - KRE
+  - KBE
+  - XHB
+  - ITB
+  - XRT
+  - IYT
+  - ITA
+  - OIH
+  - XOP
+  - GDX
+  - GDXJ
+  - SIL
+  - COPX
+  - URA
+  - LIT
+  - TAN
+  - ICLN
+  - JETS

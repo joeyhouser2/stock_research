@@ -8,6 +8,7 @@ defensive and returns ``None`` / empty rather than raising on missing fields.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import math
 import time
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+from . import fundamentals
 
 # Retry policy for transient Yahoo failures (rate limits, flaky connections).
 RETRY_ATTEMPTS = 4
@@ -79,13 +82,20 @@ def get_snapshot(ticker: str) -> TickerSnapshot | None:
     quote_type = (info.get("quoteType") or "").upper()
 
     # Equities report marketCap; ETFs report totalAssets (AUM).
+    # Size comes in the quote's major currency (pounds even when price is in pence).
+    ccy, divisor = fundamentals.major_currency(info.get("currency"))
     size = info.get("marketCap") or info.get("totalAssets")
     if size is None:
         # Last-ditch: shares * price for equities.
         shares = info.get("sharesOutstanding")
-        size = shares * price if shares else None
+        size = shares * price / divisor if shares else None
     if size is None:
         return None
+    if ccy != "USD":                      # foreign listing: gate on USD size
+        rate = fx_to_usd(ccy)
+        if rate is None:
+            return None
+        size *= rate
 
     # `trailingAnnualDividendYield` is a clean fraction; the `dividendYield` field
     # is unreliable (Yahoo has returned bare percents like 73, and even bogus 1.0
@@ -107,6 +117,18 @@ def get_snapshot(ticker: str) -> TickerSnapshot | None:
         dividend_yield=div,
         info=info,
     )
+
+
+@functools.lru_cache(maxsize=None)
+def fx_to_usd(currency: str) -> float | None:
+    """USD per one unit of ``currency`` (major ISO code), or None if Yahoo has no rate."""
+    if currency == "USD":
+        return 1.0
+    try:
+        rate = _last_price(yf.Ticker(f"{currency}USD=X"))
+    except Exception:
+        return None
+    return float(rate) if rate and rate > 0 else None
 
 
 def get_size(ticker: str) -> tuple[float | None, str]:
