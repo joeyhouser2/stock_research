@@ -173,6 +173,24 @@ def close_history(ticker: str, days: int = 1825) -> pd.Series:
     return hist["Close"].dropna()
 
 
+def ohlcv_history(ticker: str, days: int = 1825) -> pd.DataFrame:
+    """Date-indexed daily Close + Volume. Empty frame on failure.
+
+    ``close_history`` drops volume, but the index-eligibility liquidity screens
+    need traded shares and dollar value, so this returns both columns.
+    """
+    try:
+        hist = _retry(lambda: yf.Ticker(ticker).history(period=f"{max(days, 60)}d"))
+    except Exception:
+        return pd.DataFrame(columns=["Close", "Volume"])
+    if hist is None or "Close" not in hist or "Volume" not in hist:
+        return pd.DataFrame(columns=["Close", "Volume"])
+    out = hist[["Close", "Volume"]].dropna()
+    if getattr(out.index, "tz", None) is not None:
+        out.index = out.index.tz_localize(None)
+    return out
+
+
 def daily_log_returns(ticker: str, lookback_days: int = 504) -> np.ndarray:
     """Trailing daily log returns, for fitting vol / GARCH / bootstrap models.
 

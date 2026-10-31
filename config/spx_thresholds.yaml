@@ -1,0 +1,74 @@
+# S&P 500 eligibility parameters, as published by S&P Dow Jones Indices.
+#
+# The market-cap range is reviewed at the start of every calendar quarter and
+# revised when the committee sees fit, so THIS TABLE GOES STALE. Each row is the
+# minimum unadjusted company market cap effective FROM `effective` until the next
+# row's date. `verified: true` means the value was read off an S&P DJI press
+# release (URL in `source`); `verified: false` rows are gaps we have not sourced
+# yet — a backtest spanning them is using a guess, and rules.py will say so.
+#
+# To top this up: search S&P DJI press releases for "Update to S&P Composite
+# 1500 Market Cap Guidelines" and append the new row.
+
+sp500_min_market_cap:
+  - effective: 2020-12-08
+    min_cap_b: 9.8
+    verified: true
+    source: https://press.spglobal.com/2020-12-07-S-P-Dow-Jones-Indices-Announces-Update-to-S-P-Composite-1500-Market-Cap-Guidelines
+  - effective: 2021-03-17
+    min_cap_b: 11.8
+    verified: true
+    source: https://press.spglobal.com/2021-03-17-S-P-Dow-Jones-Indices-Announces-Update-to-S-P-Composite-1500-Market-Cap-Guidelines
+  - effective: 2023-01-04
+    min_cap_b: 12.7
+    verified: false
+    source: "Reported secondhand as the 2023 level; the 2024-01-02 release confirms
+      the value it replaced was 14.5, so a revision between 2023-01 and 2024-01 is
+      unsourced. Do not trust 2021-03..2024-01 backtest gates without checking."
+  - effective: 2024-01-02
+    min_cap_b: 15.8
+    verified: true
+    source: https://press.spglobal.com/2024-01-02-S-P-Dow-Jones-Indices-Announces-Update-to-S-P-Composite-1500-Market-Cap-Guidelines
+  - effective: 2025-01-02
+    min_cap_b: 20.5
+    verified: true
+    source: https://www.prnewswire.com/news-releases/sp-dow-jones-indices-announces-update-to-sp-composite-1500-market-cap-guidelines-302496221.html
+  - effective: 2025-07-01
+    min_cap_b: 22.7
+    verified: true
+    source: https://www.prnewswire.com/news-releases/sp-dow-jones-indices-announces-update-to-sp-composite-1500-market-cap-guidelines-302496221.html
+
+# How long a threshold row may be the newest one before a scan warns that the
+# table probably missed a quarterly revision.
+staleness_warn_days: 200
+
+# Criteria that are not on a revision schedule. Sourced from the S&P U.S. Indices
+# methodology; S&P DJI confirmed in June 2026 that the megacap consultation left
+# these unchanged.
+constants:
+  # Float-adjusted market cap must be at least this fraction of the unadjusted
+  # minimum above.
+  float_cap_fraction: 0.50
+  # Investable Weight Factor (public float) floor.
+  min_iwf: 0.10
+  # Annual dollar value traded / float-adjusted market cap.
+  min_liquidity_ratio: 0.75
+  # Shares traded in each of the six months before the evaluation date.
+  min_monthly_volume: 250000
+  # Months of trading on an eligible exchange before a name can be considered.
+  seasoning_months: 12
+  # Financial viability: sum of the most recent N quarters of GAAP earnings must
+  # be positive, and so must the most recent quarter on its own.
+  viability_quarters: 4
+  eligible_exchanges:
+    - NYSE
+    - NYSE American
+    - NYSE Arca
+    - NASDAQ
+    - Cboe BZX
+    - Cboe BYX
+    - Cboe EDGA
+    - Cboe EDGX
+    - IEX
+  eligible_countries:
+    - United States
